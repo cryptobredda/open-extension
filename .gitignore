@@ -1,0 +1,12 @@
+node_modules/
+dist/
+release/
+test-results/
+playwright-report/
+.bridge-token
+bridge-token
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
