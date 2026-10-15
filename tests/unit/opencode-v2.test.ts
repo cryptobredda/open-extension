@@ -95,6 +95,8 @@ describe('real OpenCode 2 protocol selection', () => {
           path = url.pathname;
         const body = request.method === 'GET' ? undefined : await request.json();
         requests.push({ path: url.pathname + url.search, body });
+        if (path === '/api/rpc/open-extension.browser/configure')
+          return json({ output: { protocol: 2, guard: 1 } });
         if (path === '/api/agent')
           return json({
             data: [{ id: 'agent-build', name: 'Build', mode: 'primary' }],
@@ -139,18 +141,8 @@ describe('real OpenCode 2 protocol selection', () => {
       parts: [{ type: 'text', text: 'Change this page' }],
     });
     expect(requests).toContainEqual({
-      path: '/api/session/ses_test',
-      body: {
-        permissions: [
-          { action: '*', resource: '*', effect: 'deny' },
-          { action: 'execute', resource: '*', effect: 'allow' },
-          ...BROWSER_TOOLS.map((name) => ({
-            action: `open-extension.dom.${name}`,
-            resource: '*',
-            effect: 'allow',
-          })),
-        ],
-      },
+      path: '/api/rpc/open-extension.browser/configure',
+      body: { input: { sessionID: 'ses_test' } },
     });
     expect(requests).toContainEqual({
       path: '/api/session/ses_test/agent',
@@ -250,6 +242,25 @@ it('preserves provider free-tier rejection and distinguishes it from browser tra
       "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building.",
   });
   expect(error).toContain("OpenCode's free tier");
-  expect(error).toContain('Choose another connected model');
-  expect(error).toContain('reconnecting browser tools will not resolve');
+  expect(error).toContain('known free-tier bug');
+  expect(error).toContain('native browser tools in Connection settings');
+});
+
+it('refuses to prompt through a native plugin without the durable execution guard', async () => {
+  const paths: string[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (request: Request) => {
+      paths.push(new URL(request.url).pathname);
+      return json({ output: { protocol: 1 } });
+    }),
+  );
+  const backend = new OpenCode(DEFAULT_SETTINGS, 'v2');
+  await expect(
+    backend.client.session.promptAsync({
+      sessionID: 'ses_test',
+      parts: [{ type: 'text', text: 'hi' }],
+    }),
+  ).rejects.toThrow('Update native browser tools');
+  expect(paths).toEqual(['/api/rpc/open-extension.browser/configure']);
 });

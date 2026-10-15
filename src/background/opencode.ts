@@ -11,7 +11,7 @@ import type {
 import { localUrl, pairingLink } from '../shared/validation';
 import { readSSE } from '../shared/sse';
 import { v2Message, v2Session } from '../shared/opencode-v2';
-import { BROWSER_PERMISSIONS } from '../shared/browser-context';
+import { NATIVE_GUARD_VERSION, NATIVE_PROTOCOL, NATIVE_RPC_ID } from '../native/protocol';
 
 export type Protocol = 'auto' | 'v1' | 'v2';
 
@@ -180,17 +180,23 @@ export class OpenCode {
     } as unknown as ReturnType<typeof createOpencodeClient>;
   }
   async restrictToBrowser(sessionID: string) {
-    if (this.protocol === 'v2')
-      await this.native.session.update({ sessionID, permissions: BROWSER_PERMISSIONS });
-    else
-      await this.legacy.session.update({
-        sessionID,
-        permission: BROWSER_PERMISSIONS.map((rule) => ({
-          permission: rule.action,
-          pattern: rule.resource,
-          action: rule.effect,
-        })),
-      });
+    if (this.protocol !== 'v2')
+      throw new Error('Browser editing requires OpenCode 2.0.29 or later.');
+    // Only the native plugin may install this policy: its durable execution guard
+    // must be active before retaining read/shell as permission-gated interfaces.
+    const result = await this.native.rpc.call({
+      rpcID: NATIVE_RPC_ID,
+      method: 'configure',
+      input: { sessionID },
+      location: this.location,
+    });
+    if (
+      result.output?.protocol !== NATIVE_PROTOCOL ||
+      result.output?.guard !== NATIVE_GUARD_VERSION
+    )
+      throw new Error(
+        'Update native browser tools in Connection settings before sending a message.',
+      );
   }
   async models(sessionID?: string): Promise<ModelCatalog> {
     if (this.protocol === 'v2') {

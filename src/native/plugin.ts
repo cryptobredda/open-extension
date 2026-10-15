@@ -2,10 +2,12 @@
 import { define } from '@opencode/plugin/promise/plugin';
 import { z } from 'zod';
 import { definitions } from '../shared/browser-tools';
+import { BROWSER_PERMISSIONS, BROWSER_TOOLS } from '../shared/browser-context';
 import {
   NATIVE_PLUGIN_ID,
   NATIVE_RPC_ID,
   NATIVE_PROTOCOL,
+  NATIVE_GUARD_VERSION,
   NATIVE_PLUGIN_VERSION,
 } from './protocol';
 import type { BrowserCommand } from './protocol';
@@ -23,6 +25,7 @@ const definition = {
   id: NATIVE_RPC_ID,
   methods: {
     status: { input: object(), output: unknown },
+    configure: { input: object({ sessionID: string }), output: unknown },
     attach: {
       input: object({ ...identity, protocol: { const: NATIVE_PROTOCOL }, context: string }),
       output: unknown,
@@ -70,6 +73,36 @@ export default define({
   id: NATIVE_PLUGIN_ID,
   async setup(ctx) {
     const attached = new Map<string, Attachment>();
+    const protectedSessions = new Set<string>();
+    const allowedTools = new Set([
+      'execute',
+      ...BROWSER_TOOLS.map((name) => `open_extension_${name}`),
+    ]);
+    const guardMessage =
+      'Open Extension is a website-only session. Local file, shell and other server tools are blocked. Use tools.open_extension to work on the active tab.';
+    const marker = (sessionID: string) => `browser-only-session/${sessionID}`;
+    const protectedSession = async (sessionID: string) => {
+      if (protectedSessions.has(sessionID)) return true;
+      if ((await ctx.storage.get(marker(sessionID))) !== true) return false;
+      protectedSessions.add(sessionID);
+      return true;
+    };
+    // This check runs before the real read/shell implementations, including calls
+    // made inside Execute and turns started from another OpenCode client.
+    const toolGuard = await ctx.tool.hook('execute.before', async (event) => {
+      if (!allowedTools.has(event.tool) && (await protectedSession(event.sessionID)))
+        throw new Error(`${guardMessage} Blocked tool: ${event.tool}.`);
+    });
+    const permissionGuard = await ctx.permission.hook('evaluate', async (event) => {
+      if (
+        event.action !== 'execute' &&
+        !BROWSER_TOOLS.some((name) => event.action === `open-extension.dom.${name}`) &&
+        (await protectedSession(event.sessionID))
+      ) {
+        event.effect = 'deny';
+        event.message = guardMessage;
+      }
+    });
     const close = (sessionID: string, reason: string) => {
       const item = attached.get(sessionID);
       if (!item) return;
@@ -89,9 +122,21 @@ export default define({
       async status() {
         return {
           protocol: NATIVE_PROTOCOL,
+          guard: NATIVE_GUARD_VERSION,
           version: NATIVE_PLUGIN_VERSION,
           directory: ctx.location.directory,
         };
+      },
+      async configure(input: any) {
+        const session = await ctx.session.get({ sessionID: input.sessionID });
+        if (session.location.directory !== ctx.location.directory)
+          throw new Error('Session belongs to another OpenCode project.');
+        // Persist the guard before retaining permission-gated native interfaces.
+        // The marker survives detachment, reloads, restarts and permission edits.
+        await ctx.storage.set(marker(input.sessionID), true);
+        protectedSessions.add(input.sessionID);
+        await ctx.session.update({ sessionID: input.sessionID, permissions: BROWSER_PERMISSIONS });
+        return { protocol: NATIVE_PROTOCOL, guard: NATIVE_GUARD_VERSION };
       },
       async attach(input: any) {
         const session = await ctx.session.get({ sessionID: input.sessionID });
@@ -116,7 +161,11 @@ export default define({
           expires: Date.now() + 45000,
           pending: new Map(),
         });
-        return { protocol: NATIVE_PROTOCOL, version: NATIVE_PLUGIN_VERSION };
+        return {
+          protocol: NATIVE_PROTOCOL,
+          guard: NATIVE_GUARD_VERSION,
+          version: NATIVE_PLUGIN_VERSION,
+        };
       },
       async heartbeat(input: any) {
         get(input).expires = Date.now() + 45000;
@@ -223,8 +272,10 @@ export default define({
     return async () => {
       clearInterval(expiry);
       for (const id of attached.keys()) close(id, 'OpenCode reloaded the native browser tools.');
-      await tools.dispose();
       await rpc.dispose();
+      await tools.dispose();
+      await toolGuard.dispose();
+      await permissionGuard.dispose();
     };
   },
 });

@@ -5,6 +5,7 @@ import {
   NATIVE_PLUGIN_ID,
   NATIVE_PLUGIN_PATH,
   NATIVE_PROTOCOL,
+  NATIVE_GUARD_VERSION,
   NATIVE_RPC_ID,
 } from '../native/protocol';
 
@@ -45,7 +46,7 @@ export class NativeTools {
     try {
       const info = await this.rpc('status');
       if (generation !== this.generation) return false;
-      if (info?.protocol !== NATIVE_PROTOCOL)
+      if (info?.protocol !== NATIVE_PROTOCOL || info?.guard !== NATIVE_GUARD_VERSION)
         throw new Error('Update the native tools plugin using Enable native browser tools.');
       this.state({ state: 'connected', registered: true });
       return true;
@@ -113,7 +114,7 @@ export class NativeTools {
         await this.rpc('detach', { sessionID, connectionID: binding.connectionID }).catch(() => {});
         throw new Error('The browser connection changed. Send your message again.');
       }
-      if (info?.protocol !== NATIVE_PROTOCOL)
+      if (info?.protocol !== NATIVE_PROTOCOL || info?.guard !== NATIVE_GUARD_VERSION)
         throw new Error('Native browser protocol mismatch. Update the native tools plugin.');
       this.heartbeat = setInterval(() => {
         if (this.bound !== binding) return;

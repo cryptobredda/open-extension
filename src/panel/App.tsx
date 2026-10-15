@@ -103,9 +103,9 @@ function PartView({ part, unit, reasoning }: { part: Part; unit: number; reasoni
     );
   if (part.type === 'step-finish')
     return (
-      <div className="step-finish">
-        <Check size={12} />
-        <span>Step complete</span>
+      <div className={`step-finish ${p.reason === 'error' ? 'error-text' : ''}`}>
+        {p.reason === 'error' ? <AlertCircle size={12} /> : <Check size={12} />}
+        <span>{p.reason === 'error' ? 'Step failed' : 'Step complete'}</span>
         <span>
           {p.reason}
           {p.tokens?.output ? ` · ${p.tokens.output.toLocaleString()} tokens` : ''}

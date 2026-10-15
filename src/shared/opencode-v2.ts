@@ -24,7 +24,7 @@ export function structuredError(error: unknown): string {
     value?.description ||
     JSON.stringify(error ?? 'OpenCode reported an error.');
   return message.includes("OpenCode's free tier can only be used from within OpenCode")
-    ? `${message} This provider rejected the browser-only tool configuration. Choose another connected model in the composer; reconnecting browser tools will not resolve this provider restriction.`
+    ? `${message} OpenCode has a known free-tier bug with restricted tool catalogs. Update Open Extension and its native browser tools in Connection settings, then retry. If it persists, check the provider’s availability or select another connected model.`
     : message;
 }
 export function v2ToolPart(

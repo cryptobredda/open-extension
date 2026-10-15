@@ -1,6 +1,6 @@
 {
   "name": "open-extension",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "A native OpenCode side panel with active-tab DOM tools and reversible site scripts",
   "scripts": {
     "build": "node scripts/build.mjs",

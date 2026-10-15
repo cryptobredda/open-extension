@@ -3,7 +3,7 @@ import { OpenCode as NativeOpenCode } from '@opencode/client';
 import { spawn, type ChildProcess } from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, access } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { BROWSER_TOOLS } from '../../src/shared/browser-context';
@@ -43,6 +43,9 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
   test.setTimeout(120000);
   const root = await mkdtemp(join(tmpdir(), 'open-extension-dom-'));
   let context: BrowserContext | undefined, child: ChildProcess | undefined;
+  const canary = `PRIVATE_CANARY_${crypto.randomUUID()}`;
+  const canaryPath = join(root, 'project', 'private-canary.txt');
+  const sentinel = join(root, 'project', 'forbidden-shell-output');
   const requests: any[] = [],
     errors: string[] = [],
     plans = new Map<string, number>();
@@ -75,74 +78,104 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
       let message: any = { role: 'assistant', content: 'Website DOM changes' };
       if (names.length) {
         requests.push(body);
-        expect(names).toEqual(['execute']);
-        const text = JSON.stringify(body.messages);
-        expect(text).toContain('browser-only session');
-        for (const name of BROWSER_TOOLS) expect(text).toContain(name);
-        expect(text).not.toContain('tools.opencode.read');
-        expect(text).not.toContain('tools.opencode.shell');
-        expect(text).toContain('relevant people');
-        expect(text).toContain('untrusted_page_observation');
-        expect(text).toContain('/page');
-        const token = [...text.matchAll(/THIS turn: ([\w-]+)/g)].at(-1)?.[1];
-        expect(token).toBeTruthy();
-        const index = plans.get(token!) || 0;
-        plans.set(token!, index + 1);
-        const updating = text.includes('UPDATE THIS EXISTING SCRIPT');
-        const scriptId = text.match(/scriptId=([\w-]+)/)?.[1];
-        const code = updating ? updatedCode : initialCode;
-        const steps = [
-          { name: 'browser_observe', args: { html: true } },
-          { name: 'browser_execute', args: { code, html: true } },
-          {
-            name: 'browser_execute',
-            args: {
-              code: 'return {removed: !document.querySelector("[data-section=people]"), main: !!document.querySelector("main"), trends: !!document.querySelector("[data-section=trends]")};',
-            },
-          },
-          {
-            name: 'site_script_propose',
-            args: {
-              name: 'Hide relevant people',
-              description:
-                'Remove Relevant people across this website, including content loaded after navigation.',
-              code,
-              ...(updating ? { scriptId } : {}),
-            },
-          },
-        ];
-        if (index === 3) {
-          const tool = body.messages.filter((message: any) => message.role === 'tool').at(-1);
-          expect(tool?.content).toMatch(/"removed"\s*:\s*true/);
-          expect(tool?.content).toMatch(/"main"\s*:\s*true/);
-          expect(tool?.content).toMatch(/"trends"\s*:\s*true/);
-        }
-        if (index < steps.length) {
-          const step = steps[index];
-          message = {
-            role: 'assistant',
-            content: null,
-            reasoning_content:
-              'I will modify the current website DOM with browser tools and verify the result.',
-            tool_calls: [
-              {
-                id: `call_${token}_${index}`,
-                type: 'function',
-                function: {
-                  name: 'execute',
-                  arguments: JSON.stringify({
-                    code: `return await tools.open_extension.${step.name}(${JSON.stringify({ context: token, ...step.args })});`,
-                  }),
-                },
+        expect(JSON.stringify(body.messages)).not.toContain(canary);
+        const probe = JSON.stringify(body.messages).match(/GUARD_PROBE_(READ|SHELL|EXECUTE)/)?.[1];
+        if (probe) {
+          const previous = body.messages.some((m: any) => m.role === 'tool');
+          message = previous
+            ? { role: 'assistant', content: 'Server policy blocked local access.' }
+            : {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                  {
+                    id: `guard_${probe}`,
+                    type: 'function',
+                    function: {
+                      name: probe === 'READ' ? 'read' : probe === 'SHELL' ? 'shell' : 'execute',
+                      arguments: JSON.stringify(
+                        probe === 'READ'
+                          ? { path: canaryPath }
+                          : probe === 'SHELL'
+                            ? { command: `printf blocked > '${sentinel.replaceAll("'", "'\\''")}'` }
+                            : {
+                                code: `return await tools.opencode.read({path:${JSON.stringify(canaryPath)}});`,
+                              },
+                      ),
+                    },
+                  },
+                ],
+              };
+        } else {
+          expect(new Set(names)).toEqual(new Set(['read', 'shell', 'execute']));
+          const text = JSON.stringify(body.messages);
+          expect(text).toContain('browser-only session');
+          for (const name of BROWSER_TOOLS) expect(text).toContain(name);
+          expect(text).not.toContain('tools.opencode.read');
+          expect(text).not.toContain('tools.opencode.shell');
+          expect(text).toContain('relevant people');
+          expect(text).toContain('untrusted_page_observation');
+          expect(text).toContain('/page');
+          const token = [...text.matchAll(/THIS turn: ([\w-]+)/g)].at(-1)?.[1];
+          expect(token).toBeTruthy();
+          const index = plans.get(token!) || 0;
+          plans.set(token!, index + 1);
+          const updating = text.includes('UPDATE THIS EXISTING SCRIPT');
+          const scriptId = text.match(/scriptId=([\w-]+)/)?.[1];
+          const code = updating ? updatedCode : initialCode;
+          const steps = [
+            { name: 'browser_observe', args: { html: true } },
+            { name: 'browser_execute', args: { code, html: true } },
+            {
+              name: 'browser_execute',
+              args: {
+                code: 'return {removed: !document.querySelector("[data-section=people]"), main: !!document.querySelector("main"), trends: !!document.querySelector("[data-section=trends]")};',
               },
-            ],
-          };
-        } else
-          message = {
-            role: 'assistant',
-            content:
-              'Verified: Relevant people is removed from the current page. Main content and trends remain. Review the site script to keep this change on every page of this website.',
-          };
+            },
+            {
+              name: 'site_script_propose',
+              args: {
+                name: 'Hide relevant people',
+                description:
+                  'Remove Relevant people across this website, including content loaded after navigation.',
+                code,
+                ...(updating ? { scriptId } : {}),
+              },
+            },
+          ];
+          if (index === 3) {
+            const tool = body.messages.filter((message: any) => message.role === 'tool').at(-1);
+            expect(tool?.content).toMatch(/"removed"\s*:\s*true/);
+            expect(tool?.content).toMatch(/"main"\s*:\s*true/);
+            expect(tool?.content).toMatch(/"trends"\s*:\s*true/);
+          }
+          if (index < steps.length) {
+            const step = steps[index];
+            message = {
+              role: 'assistant',
+              content: null,
+              reasoning_content:
+                'I will modify the current website DOM with browser tools and verify the result.',
+              tool_calls: [
+                {
+                  id: `call_${token}_${index}`,
+                  type: 'function',
+                  function: {
+                    name: 'execute',
+                    arguments: JSON.stringify({
+                      code: `return await tools.open_extension.${step.name}(${JSON.stringify({ context: token, ...step.args })});`,
+                    }),
+                  },
+                },
+              ],
+            };
+          } else
+            message = {
+              role: 'assistant',
+              content:
+                'Verified: Relevant people is removed from the current page. Main content and trends remain. Review the site script to keep this change on every page of this website.',
+            };
+        }
       }
       const finish = message.tool_calls ? 'tool_calls' : 'stop';
       if (body.stream) {
@@ -241,6 +274,7 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
         { timeout: 30000 },
       )
       .toBe(true);
+    await writeFile(canaryPath, canary);
     context = await chromium.launchPersistentContext(join(root, 'chrome'), {
       channel: 'chromium',
       headless: true,
@@ -376,6 +410,79 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
     );
     await rpc(panel, 'scripts.toggle', { id: saved.id, enabled: false });
     await expect(target.locator('[data-section=people]')).toBeVisible();
+
+    // Deliberately call real local tools through the real backend. Even permission
+    // approval in another client must not bypass the persistent browser-only guard.
+    await rpc(panel, 'preferences.model', { model: 'browser_test/dom-agent' });
+    for (const kind of ['READ', 'SHELL', 'EXECUTE']) {
+      const guarded = await rpc(panel, 'session.create');
+      const policy = (await api.session.get({ sessionID: guarded.id })).permissions;
+      expect(policy).toContainEqual({ action: 'read', resource: '*', effect: 'ask' });
+      expect(policy).toContainEqual({ action: 'shell', resource: '*', effect: 'ask' });
+      if (kind === 'SHELL') {
+        await api.location.reload();
+        await expect
+          .poll(async () => {
+            try {
+              return (
+                await api.rpc.call({ rpcID: 'open-extension.browser', method: 'status', input: {} })
+              ).output?.guard;
+            } catch {
+              return 0;
+            }
+          })
+          .toBe(1);
+        // Simulate an authenticated client granting permissions to this session.
+        await api.session.update({
+          sessionID: guarded.id,
+          permissions: [{ action: '*', resource: '*', effect: 'allow' }],
+        });
+      }
+      await api.session.prompt({ sessionID: guarded.id, text: `GUARD_PROBE_${kind}` });
+      await expect
+        .poll(async () => (await api.session.get({ sessionID: guarded.id })).outcome)
+        .toMatch(/succeeded|failed/);
+      const history = JSON.stringify((await api.message.list({ sessionID: guarded.id })).data);
+      expect(history).not.toContain(canary);
+      expect(history).toMatch(/website-only|Server policy blocked|not.*available|undefined/);
+      expect(await readFile(canaryPath, 'utf8')).toBe(canary);
+      await expect(access(sentinel)).rejects.toThrow();
+    }
+    expect(errors).toEqual([]);
+
+    // Opt in to a real free-provider smoke test; regular CI stays deterministic.
+    if (process.env.OPENCODE_FREE_MODEL) {
+      const value = process.env.OPENCODE_FREE_MODEL;
+      await rpc(panel, 'preferences.model', { model: value });
+      const freeSession = await rpc(panel, 'session.create');
+      await target.goto(`${site}/page/free-model`);
+      await target.bringToFront();
+      await rpc(panel, 'send', {
+        id: freeSession.id,
+        text: 'Remove the Relevant people section from this live website using reversible api.remove and api.watch. Keep the main content and What’s happening section. Verify the live DOM and propose a site script for approval. Work only on this browser tab.',
+      });
+      await expect(target.locator('[data-section=people]')).toBeHidden({ timeout: 60000 });
+      await expect
+        .poll(async () => (await api.session.get({ sessionID: freeSession.id })).outcome, {
+          timeout: 60000,
+        })
+        .toBe('succeeded');
+      const approval = panel.getByRole('button', { name: /^(Install|Update script)$/ });
+      await expect(approval).toBeVisible();
+      await expect(target.locator('main')).toHaveText('PostKeep this content');
+      await expect(target.locator('[data-section=trends]')).toBeVisible();
+      const proposal = (await rpc(panel, 'snapshot')).proposals.find(
+        (p: any) => p.sessionID === freeSession.id,
+      );
+      expect(proposal.matches).toEqual(['*://127.0.0.1/*']);
+      await approval.click();
+      await target.reload();
+      await expect(target.locator('[data-section=people]')).toBeHidden();
+      console.log(
+        `Real free provider verified: ${value}; live DOM removed, observed, script approved and persisted across refresh.`,
+      );
+      await panel.screenshot({ path: testInfo.outputPath('free-model-dom-verified.png') });
+    }
   } catch (error) {
     console.error('Local provider errors:', errors);
     console.error('Browser model requests:', requests.length);

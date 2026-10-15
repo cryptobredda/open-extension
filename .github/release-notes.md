@@ -1,14 +1,15 @@
-Open Extension 1.3.0 replaces the separate browser bridge with native OpenCode tools and recreates the compact dark side-panel UI.
+Open Extension 1.3.1 fixes the reported OpenCode free-model failure while preserving website-only execution.
 
-- No separate process, port, Node installation or browser pairing key for the prebuilt extension. Browser commands use the existing authenticated OpenCode HTTP/event connection.
-- Enable the bundled native OpenCode plugin once from Connection settings. All AI, models and history remain on your existing server; live tools stay restricted to the active website.
-- Compact conversation bubbles, slim composer with agent/model controls, review cards and a centered **Open Extension** welcome screen.
-- Dedicated top-level **Scripts** tab with **This site / All sites**, search, website/name/date sorting, status filters, toggles, code editing, agent-assisted updates and deletion.
-- Verified full-domain script persistence across refreshes, SPA navigation and alternate DOM layouts.
-- Free-tier diagnostics: the reported OpenCode free-model rejection also occurs with browser-only permissions on a real native backend. Removing the bridge does not resolve that provider policy. Errors now explain how to select another connected model.
+- Addresses the upstream tool-catalog bug tracked in [OpenCode #51241](https://github.com/anomalyco/opencode/issues/51241) and [#50627](https://github.com/anomalyco/opencode/issues/50627): genuine OpenCode requests can be rejected when standard tools are removed.
+- Retains OpenCode’s real file-reading and shell interfaces in the permission-gated `ask` state, while a separate native server guard blocks every call before execution. File/shell access is not granted, and the guard cannot be bypassed by approving a permission in another client.
+- The browser-only guard persists across panel closure, plugin reloads and backend restarts. Ordinary OpenCode sessions remain unaffected.
+- Requires the updated native plugin. Protocol validation prevents applying the compatibility policy through an older, unguarded plugin.
+- Corrects the old error guidance and shows **Step failed** for failed model steps.
 
-Download **open-extension-chrome-v1.3.0.zip**, extract it, and load its `open-extension/extension` directory using Chrome/Brave’s **Load unpacked**. Requires Chrome/Brave 138+ and OpenCode 2.0.29. Enable **Allow User Scripts**, connect to your existing OpenCode service, then click **Enable native browser tools**. This installs `.opencode/plugins/open-extension.js` in the selected backend project and reloads its plugins. The project ZIP also includes sources and a compiled `dist` build.
+**Upgrade both components:** download `open-extension-chrome-v1.3.1.zip`, replace the compiled files in your **existing unpacked extension folder**, then click Reload on its existing Chrome entry. Keeping the same folder/extension ID preserves saved scripts and connection preferences. Open **Connection settings → Enable native browser tools** (or **Update native browser tools**) to install the backend guard. Retry your message; you can keep the same conversation.
 
-Upgrading from 1.2: replace the build files in your **existing unpacked extension folder**, then click **Reload** on its existing Chrome entry. Keeping the same folder/extension ID preserves saved scripts and connection preferences. Loading a different folder can create a separate extension with fresh storage. Old bridge credentials are discarded. Stop `npm run bridge` after enabling the native plugin. Existing approved site scripts continue to work offline.
+Requires Chrome/Brave 138+ and an existing OpenCode 2.0.29 service. No bridge process, extra port, pairing key or Node installation is needed for the prebuilt extension. The project ZIP includes all sources and a compiled `dist` build.
 
-Validation includes TypeScript/unit checks, native RPC integration in real Chrome, script-library/browser-restart coverage, and an isolated actual OpenCode 2.0.29 server with a controlled local provider driving the complete browser workflow. See the README for setup, architecture and provider-policy details.
+The previous 1.3.0 diagnosis was incomplete: bridge removal was unrelated, but this is an upstream compatibility bug rather than an unavoidable restriction on the extension. See the README for the native policy, regression tests and opt-in real free-provider DOM test. Provider quotas and service availability still apply.
+
+Validated with **38 unit tests and three Chrome integration tests**, including an actual **OpenCode 2.0.29 + DeepSeek V4.1 Flash Free** workflow: live DOM removal, re-observation, script proposal/approval and refresh persistence. Deliberate native file and shell attempts were rejected, including after plugin reload and a permission change from another client.

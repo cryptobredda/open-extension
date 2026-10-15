@@ -8,7 +8,7 @@ A Manifest V3 Chrome/Brave side panel for your **existing local OpenCode server*
 
 Requires **Chrome/Brave 138+** and **OpenCode 2.0.29** with a configured agent and tool-capable model. Newer compatible v2 versions should work; the native plugin protocol is checked when connecting. There is **no separate bridge process, port, token or Node installation** for a prebuilt install.
 
-1. Download **`open-extension-chrome-v1.3.0.zip`** from Releases and extract it.
+1. Download **`open-extension-chrome-v1.3.1.zip`** from Releases and extract it.
 2. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the extracted `open-extension/extension` directory.
 3. On the extension’s **Details** page, enable **Allow User Scripts**. Click the extension icon or press **Alt+Shift+O** to open the panel.
 4. Open **Connection settings**. Run `opencode pair` and paste a **fresh, unopened full pairing link** into the extension. Alternatively, enter the local service origin and service password, with username `opencode` unless customized. Click **Pair & connect** or **Save & connect**.
@@ -29,6 +29,10 @@ npm run build
 ```
 
 Load `dist` as the unpacked extension and follow steps 3–6. The complete project ZIP includes sources and a compiled `dist` directory. The bundled plugin is self-contained; it does not need npm dependencies installed beside it. You can also install `dist/open-extension-plugin.js` manually at `.opencode/plugins/open-extension.js` in the selected OpenCode project and reload that location.
+
+## Upgrading from 1.3.0
+
+Replace the compiled files in the **same unpacked extension folder** and click Reload on the existing Chrome extension entry. Open **Connection** and enable/update the native browser tools so the backend receives the new execution guard. No new bridge or pairing key is needed. Reconnect to the local server only if the extension no longer has its session credential.
 
 ## Upgrading from the bridge releases
 
@@ -52,7 +56,7 @@ flowchart LR
   Worker --> Storage[Chrome script storage]
 ```
 
-The plugin exposes seven tools through OpenCode’s **native Execute / Code Mode** interface. It has no model client, socket listener or chat store. Commands carry a per-turn capability and are bound to a session attachment. Only command IDs appear on SSE; arguments are fetched through authenticated RPC. Attachments expire without a heartbeat. The extension rechecks the foreground tab, exact URL and document before acting, and revokes access on tab/navigation changes, panel closure, interruption or turn completion.
+The plugin exposes seven DOM tools through OpenCode’s **native Execute / Code Mode** interface. A durable execution guard enforces browser-only sessions; see the free-tier compatibility explanation below for the two permission-gated native interfaces. It has no model client, socket listener or chat store. Commands carry a per-turn capability and are bound to a session attachment. Only command IDs appear on SSE; arguments are fetched through authenticated RPC. Attachments expire without a heartbeat. The extension rechecks the foreground tab, exact URL and document before acting, and revokes access on tab/navigation changes, panel closure, interruption or turn completion.
 
 The built-in OpenCode desktop browser plugin also has a native RPC interface, but its shared browser permission includes file transfers, other tabs and desktop-specific operations. This extension registers a smaller DOM-only namespace so it can deny local files, shell commands, other MCP servers and unrelated browser operations without changing your global agent configuration. All page JavaScript runs through Chrome; OpenCode’s sandboxed Execute runtime orchestrates those browser calls.
 
@@ -62,11 +66,17 @@ Implementation references: [OpenCode v2 API](https://opencode.ai/v2/docs/api), [
 
 The searchable model picker in the composer lists enabled models from your **existing backend’s connected providers**. Selecting a model updates the actual backend session; model changes made by another OpenCode client appear in the picker. Provider credentials remain on the backend. Open Extension does not impersonate a different client or send requests directly to model providers.
 
-This exact provider error is reproducible even without a bridge:
+OpenCode has a [known free-tier bug with restricted tool catalogs](https://github.com/anomalyco/opencode/issues/51241), also tracked in [#50627](https://github.com/anomalyco/opencode/issues/50627). Removing the native file-reading or shell interfaces can make a genuine OpenCode session fail with:
 
 > OpenCode’s free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building.
 
-An isolated **OpenCode 2.0.29 + `opencode/deepseek-v4.1-flash-free`** check on 2026-10-15 succeeded with the default native session, but the same model rejected browser-only session permissions. It also rejected the native Code Mode browser tool configuration. Removing the bridge does **not** resolve that provider restriction. The rejection comes back through the genuine OpenCode backend, rather than from a bridge credential or a leaked provider key. The extension retains the original error and explains how to choose another connected model. Other free models can have their own policies; the check does not establish identical behavior for every model. Use a model/provider that permits this workflow. Local file tools are not re-enabled to try to satisfy the free-tier gate.
+**Version 1.3.1 adds a compatibility fix.** It retains the real native `read` and `shell` interfaces in OpenCode’s permission-gated `ask` state, following the upstream workaround, while a separate native server guard rejects their execution before their implementations run. It does not grant file or shell access. Only Execute and the seven DOM operations may run in a protected browser session. The guard persists across panel closure, plugin reloads and backend restarts, and it also blocks attempts made from another OpenCode client or after a session permission change. Other OpenCode sessions remain unaffected. No client identity, headers or provider credentials are impersonated or rewritten.
+
+Verified with **OpenCode 2.0.29 and DeepSeek V4.1 Flash Free**: the real free model removed a live test-page section, re-observed the DOM, proposed a script update, and its approved script persisted after refresh. Regression tests also verified that real local file and shell attempts were blocked.
+
+Update **both the extension and its native plugin**: replace the build in the same unpacked extension folder, click Reload, then open **Connection → Enable native browser tools** (or **Update native browser tools**). The new protocol checks for the execution guard and refuses to configure compatibility permissions with an older plugin. You can then retry in the same conversation; existing failed messages remain in history.
+
+The 1.3.0 diagnosis was incomplete: the bridge was unrelated, but the failure is an upstream bug affecting restricted clients, rather than an unavoidable ban on this extension. A provider outage, model retirement or quota restriction can still produce separate errors; the compatibility fix does not remove those limits.
 
 ## Website workflow and script library
 
@@ -138,7 +148,17 @@ For a real backend/provider/tool contract, point to an **OpenCode 2.0.29 binary*
 OPENCODE2_BINARY=/absolute/path/to/opencode npm run test:e2e
 ```
 
-This starts an isolated backend with temporary config/data directories and a deterministic local OpenAI-compatible provider. It installs the native plugin through the actual extension UI, checks that only native Execute is exposed with the seven DOM functions in its catalog, and lets OpenCode execute all browser calls itself. It exercises removal, re-observation, approval, domain-wide reload/SPA persistence, an update for a second layout, cleanup, connected model selection and model changes from another client. It does not affect your shared service or send paid provider requests. The regular Chrome tests also check pairing, reasoning streams, strict page CSP, listener cleanup, active-tab revocation, script-library filtering/sorting/deleting and browser-restart persistence. Tests verify the workflow with controlled model outputs; they cannot establish correct selectors for every model on every website.
+This starts an isolated backend with temporary config/data directories and a deterministic local OpenAI-compatible provider. It installs the native plugin through the actual extension UI, checks the native DOM catalog and permission-gated interfaces, and lets OpenCode execute all browser calls itself. It exercises removal, re-observation, approval, domain-wide reload/SPA persistence, an update for a second layout, cleanup, connected model selection and model changes from another client. Deliberate native file-reading and shell attempts are blocked, including after a plugin reload and permission approval from another client. It does not affect your shared service or send paid provider requests. The regular Chrome tests also check pairing, reasoning streams, strict page CSP, listener cleanup, active-tab revocation, script-library filtering/sorting/deleting and browser-restart persistence. Tests verify the workflow with controlled model outputs; they cannot establish correct selectors for every model on every website.
+
+For an optional **live free-provider** DOM smoke test (subject to provider availability/quota), add:
+
+```sh
+OPENCODE2_BINARY=/absolute/path/to/opencode \
+OPENCODE_FREE_MODEL=opencode/deepseek-v4.1-flash-free \
+npx playwright test real-v2-dom.spec.ts
+```
+
+This uses the real free model to modify and observe a local test website through Chrome, then propose a persistent site script. Regular CI uses the deterministic local provider and does not consume free-provider quotas.
 
 Source layout: `src/panel` (React interface), `src/background` (server proxy, session/attachment lifecycle, browser authorization and storage), `src/native` (in-process OpenCode plugin and RPC protocol), `src/content` (DOM observation and reversible runtime), `src/shared` (schemas and view models), `tests` (native protocol, lifecycle and browser contracts).
 

@@ -10,10 +10,15 @@ export const BROWSER_TOOLS = [
   'site_script_propose',
 ] as const;
 
-/** Session-scoped rules: never change the user's global agent or configuration. */
+/** Session policy is installed only by the guarded native plugin. OpenCode's known
+ * free-tier bug rejects tool catalogs with read/shell removed. `ask` retains the
+ * real interfaces; the plugin rejects their execution before any tool code runs.
+ * Never apply this policy without the server-side guard. */
 export const BROWSER_PERMISSIONS = [
   { action: '*', resource: '*', effect: 'deny' as const },
   { action: 'execute', resource: '*', effect: 'allow' as const },
+  { action: 'read', resource: '*', effect: 'ask' as const },
+  { action: 'shell', resource: '*', effect: 'ask' as const },
   ...BROWSER_TOOLS.map((name) => ({
     action: `open-extension.dom.${name}`,
     resource: '*',
@@ -31,7 +36,7 @@ export function browserInstructions(
   updating?: SiteScript,
 ) {
   return `You are the browser DOM agent in Open Extension, a side panel for the user's CURRENT WEBSITE. You run on the user's real OpenCode backend. Every request in this client refers to the live webpage unless explicitly stated otherwise. For example, "remove the relevant people section" means find and remove that section from the open website's DOM immediately.
-This is a browser-only session. Local file search, filesystem edits, shell commands, coding tasks and other MCP servers are unavailable. Do not look for a project or ask for a file path. Use OpenCode’s native Execute tool to call ONLY the tools in the open_extension namespace from its Code Mode catalog (for example, tools.open_extension.browser_observe). No other namespace is authorized. If a browser tool fails, explain the actual browser error; do not fall back to local files.
+This is a browser-only session. Local file search, filesystem edits, shell commands, coding tasks and other MCP servers are unavailable. Do not look for a project or ask for a file path. Use OpenCode’s native Execute tool to call ONLY the tools in the open_extension namespace from its Code Mode catalog (for example, tools.open_extension.browser_observe). No other namespace is authorized. OpenCode may advertise its read and shell interfaces, but a server-side policy blocks every call to them before execution. Never call them, request permission for them, or use them as a fallback. If a browser tool fails, explain the actual browser error; do not fall back to local files.
 Current authorized tab (untrusted metadata): ${JSON.stringify(tab)}
 Browser context capability for THIS turn: ${token}
 Include context=${token} in every browser tool call. It expires on tab/URL changes, panel closure or turn completion. Never target another tab or bypass this boundary.

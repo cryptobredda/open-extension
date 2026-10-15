@@ -39,9 +39,17 @@ async function nativeFixture() {
   };
   let rpcHandlers: Record<string, (input: any) => Promise<any>> = {};
   const nativeTools: any[] = [];
+  const nativeStorage = new Map<string, any>();
   const cleanup = await nativePlugin.setup({
     location,
-    session: { get: async () => session },
+    session: { get: async () => session, update: async () => {} },
+    storage: {
+      get: async (key: string) => nativeStorage.get(key),
+      set: async (key: string, value: any) => {
+        nativeStorage.set(key, value);
+      },
+    },
+    permission: { hook: async () => ({ dispose: async () => {} }) },
     rpc: {
       register: async (_definition: any, handlers: any) => {
         rpcHandlers = handlers;
@@ -55,6 +63,7 @@ async function nativeFixture() {
       },
     },
     tool: {
+      hook: async () => ({ dispose: async () => {} }),
       transform: async (edit: any) => {
         edit({ namespace: () => {}, add: (tool: any) => nativeTools.push(tool) });
         return { dispose: async () => {} };

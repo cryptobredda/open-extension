@@ -7,7 +7,7 @@ function fixture() {
     output:
       input.method === 'command'
         ? { id: input.input.requestID, name: 'browser_observe', args: { context: 'turn' } }
-        : { protocol: 1 },
+        : { protocol: 2, guard: 1 },
   }));
   const backend = {
     protocol: 'v2',
@@ -69,7 +69,7 @@ describe('native Chrome transport', () => {
           ? new Promise((resolve) => {
               release = resolve;
             })
-          : { output: { protocol: 1 } },
+          : { output: { protocol: 2, guard: 1 } },
       );
       f.transport.handle(f.control());
       f.transport.handle({
@@ -93,11 +93,11 @@ describe('native Chrome transport', () => {
         ? new Promise((resolve) => {
             release = resolve;
           })
-        : { output: { protocol: 1 } },
+        : { output: { protocol: 2, guard: 1 } },
     );
     const pending = f.transport.attach('ses_test', 'turn');
     f.transport.close();
-    release({ output: { protocol: 1 } });
+    release({ output: { protocol: 2, guard: 1 } });
     await expect(pending).rejects.toThrow('connection changed');
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.call.mock.calls.some(([input]) => input.method === 'detach')).toBe(true);
