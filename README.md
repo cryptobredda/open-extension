@@ -32,7 +32,7 @@ Load `dist` as the unpacked extension and follow steps 3–6. The complete proje
 
 ## Upgrading from the bridge releases
 
-Reload the extension from the new unpacked build, reconnect to OpenCode, and click **Enable native browser tools**. Saved scripts, connection preferences and model selection are retained. Old bridge credentials are discarded. Stop the old `npm run bridge` process; it is no longer used. A legacy runtime MCP registration is not needed and cannot be used by browser-only sessions because native DOM tools use their own permission names.
+Replace the compiled files in your **existing unpacked extension folder**, then click **Reload** on the existing entry in `chrome://extensions`. If building from the same checkout, use `git pull`, `npm ci` and `npm run build` before Reload. Keep the same folder and extension entry: loading a different folder can create a new extension ID with separate Chrome storage. Reconnect to OpenCode and click **Enable native browser tools**. Saved scripts, connection preferences and model selection are retained when the extension ID stays the same. Old bridge credentials are discarded. Stop the old `npm run bridge` process; it is no longer used. A legacy runtime MCP registration is not needed and cannot be used by browser-only sessions because native DOM tools use their own permission names.
 
 OpenCode 1.x server identities can still be recognized for a useful upgrade message, but browser editing now requires the native v2 plugin API. Existing approved site scripts work independently of the backend connection.
 
