@@ -1,0 +1,38 @@
+name: Publish release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Check release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module -e 'import {readFileSync} from "node:fs"; const version = JSON.parse(readFileSync("package.json", "utf8")).version; if (process.env.RELEASE_TAG !== `v${version}`) throw new Error("Tag must match package.json version");'
+      - run: npm ci
+      - run: npm run check
+      - run: npm run package
+      - name: Publish downloadable packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/*-v*.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Open Extension $GITHUB_REF_NAME" \
+            --notes-file .github/release-notes.md
