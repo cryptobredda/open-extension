@@ -146,41 +146,6 @@ export class OpenCode {
           };
         },
       },
-      mcp: {
-        add: async ({
-          name,
-          config,
-        }: {
-          name: string;
-          config: { url: string; headers?: Record<string, string> };
-        }) => {
-          await this.native.mcp.add({
-            server: name,
-            location: this.location,
-            config: {
-              type: 'remote',
-              url: config.url,
-              headers: config.headers,
-              oauth: false,
-              disabled: false,
-              codemode: false,
-              timeout: { startup: 20000, catalog: 20000, execution: 60000 },
-            },
-          });
-          let servers = (await this.native.mcp.list({ location: this.location })).data;
-          for (
-            let n = 0;
-            n < 20 && servers.find((server) => server.name === name)?.status.status === 'pending';
-            n++
-          ) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            servers = (await this.native.mcp.list({ location: this.location })).data;
-          }
-          return {
-            data: Object.fromEntries(servers.map((server) => [server.name, server.status])),
-          };
-        },
-      },
       permission: {
         list: async () => ({
           data: (await this.native.permission.request.list({ location: this.location })).data.map(
@@ -376,7 +341,7 @@ export class OpenCode {
     }
     if ([401, 403].includes(response.status))
       throw new Error(
-        'OpenCode rejected the credentials. Use the OpenCode service password or paste a fresh opencode pair link. The browser bridge token is a separate credential.',
+        'OpenCode rejected the credentials. Use the OpenCode service password or paste a fresh opencode pair link. Check the OpenCode service credentials in Connection settings.',
       );
     return response;
   }

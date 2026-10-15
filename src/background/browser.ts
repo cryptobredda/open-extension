@@ -3,6 +3,7 @@ import { scriptSource } from '../content/runtime';
 import { requireUserScripts, ScriptStore } from './scripts';
 import { matchesUrl, validatePattern } from '../shared/validation';
 import { domainPattern } from '../shared/browser-context';
+import { scriptMatchesSite } from '../shared/script-library';
 
 export async function activeTab(): Promise<TabInfo> {
   const [tab] = await chrome.tabs.query({
@@ -128,12 +129,12 @@ export class BrowserTools {
       });
       return observation;
     }
-    if (call.name === 'site_scripts_list')
-      return this.store
-        .list()
-        .then((scripts) =>
-          args.includeCode ? scripts : scripts.map(({ code, ...script }) => script),
-        );
+    if (call.name === 'site_scripts_list') {
+      const saved = (await this.store.list()).filter((script) =>
+        scriptMatchesSite(script, tab.url),
+      );
+      return args.includeCode ? saved : saved.map(({ code, ...script }) => script);
+    }
     if (call.name === 'site_script_propose') {
       args.matches ??= [domainPattern(tab.url)];
       args.scriptId ??= this.lease!.scriptId;
@@ -167,9 +168,7 @@ export class BrowserTools {
       if (
         args.scriptId &&
         !(await this.store.list()).some(
-          (script) =>
-            script.id === args.scriptId &&
-            script.matches.some((pattern) => matchesUrl(pattern, tab.url)),
+          (script) => script.id === args.scriptId && scriptMatchesSite(script, tab.url),
         )
       )
         throw new Error('The script to update must belong to the current website.');

@@ -1,32 +1,31 @@
 import type {
   Settings,
   ConnectionState,
-  BridgeState,
+  BrowserConnectionState,
   Proposal,
   ToolCall,
   SiteScript,
   BackendEvent,
 } from '../shared/types';
 import { DEFAULT_SETTINGS } from '../shared/types';
-import { validateSettings, errorText, localUrl, matchesUrl } from '../shared/validation';
+import { validateSettings, errorText } from '../shared/validation';
 import { browserInstructions } from '../shared/browser-context';
+import { scriptMatchesSite } from '../shared/script-library';
 import { OpenCode, discover, redeemPairing } from './opencode';
 import { ScriptStore, userScriptsAvailable } from './scripts';
 import { BrowserTools, activeTab } from './browser';
+import { NativeTools } from './native-tools';
 
 const ports = new Set<chrome.runtime.Port>();
 const scripts = new ScriptStore((message) => broadcast('notice', message));
 let settings: Settings = DEFAULT_SETTINGS;
 let backend: OpenCode;
 let connection: ConnectionState = { state: 'disconnected' };
-let bridgeState: BridgeState = { state: 'disconnected' };
+let browserState: BrowserConnectionState = { state: 'disconnected' };
 let stream: AbortController | undefined;
-let socket: WebSocket | undefined;
-let bridgeRetry: ReturnType<typeof setTimeout> | undefined;
-let bridgeHeartbeat: ReturnType<typeof setInterval> | undefined;
+let nativeTools: NativeTools | undefined;
 let activeSession = '';
 let epoch = 0;
-let registrationQueue: Promise<unknown> = Promise.resolve();
 let proposals: Proposal[] = [];
 const browser = new BrowserTools(scripts, async (proposal) => {
   proposals = [...proposals.filter((item) => item.sessionID !== proposal.sessionID), proposal];
@@ -43,11 +42,16 @@ const ready = (async () => {
     chrome.storage.session.get(['password', 'proposals']),
   ]);
   const stored = local.settings as Partial<Settings> | undefined;
-  settings = {
+  settings = validateSettings({
     ...DEFAULT_SETTINGS,
     ...stored,
     password: stored?.rememberPassword ? stored.password || '' : (session.password as string) || '',
-  };
+  });
+  if (stored && ('bridgeToken' in stored || 'bridgeUrl' in stored)) {
+    await chrome.storage.local.set({
+      settings: { ...settings, password: settings.rememberPassword ? settings.password : '' },
+    });
+  }
   activeSession = (local.activeSession as string) || '';
   proposals = (session.proposals as Proposal[]) || [];
   backend = new OpenCode(settings);
@@ -67,9 +71,9 @@ function setConnection(value: ConnectionState) {
   connection = value;
   broadcast('connection', value);
 }
-function setBridge(value: BridgeState) {
-  bridgeState = value;
-  broadcast('bridge', value);
+function setBrowserConnection(value: BrowserConnectionState) {
+  browserState = value;
+  broadcast('browserConnection', value);
 }
 async function persistSettings(value: Settings) {
   settings = validateSettings(value);
@@ -88,7 +92,7 @@ async function snapshot() {
   return {
     settings,
     connection,
-    bridge: bridgeState,
+    browserConnection: browserState,
     activeSession,
     scripts: await scripts.list(),
     proposals,
@@ -103,16 +107,14 @@ async function connect() {
   browser.revoke();
   backend = new OpenCode(settings);
   setConnection({ state: 'connecting' });
-  connectBridge();
+  nativeTools?.close();
+  nativeTools = new NativeTools(backend, runTool, setBrowserConnection, () => browser.revoke());
   try {
     const health = await backend.inspect();
     if (generation !== epoch) return;
     setConnection({ state: 'connected', ...health });
     startStream(generation);
-    if (bridgeState.state === 'connected')
-      void registerMcp().catch((error) =>
-        setBridge({ state: 'connected', registered: false, error: errorText(error) }),
-      );
+    await nativeTools.check();
     return health;
   } catch (error) {
     if (generation === epoch) setConnection({ state: 'disconnected', error: errorText(error) });
@@ -140,9 +142,7 @@ function startStream(generation: number) {
           delay = 1000;
           if (event.type === 'server.connected') {
             broadcast('resync');
-            void registerMcp().catch((error) =>
-              setBridge({ state: 'connected', registered: false, error: errorText(error) }),
-            );
+            void nativeTools?.check();
           }
           if (
             [
@@ -153,18 +153,24 @@ function startStream(generation: number) {
             ].includes(event.type) ||
             (event.type === 'session.status' && event.properties.status?.type === 'idle')
           ) {
-            if (event.properties.sessionID === activeSession) browser.revoke();
+            if (event.properties.sessionID === activeSession) {
+              browser.revoke();
+              nativeTools?.close();
+            }
           }
           if (
             event.type === 'session.model.selected' &&
             event.properties.sessionID === activeSession
           )
             broadcast('model.changed');
+          nativeTools?.handle(event);
           broadcast('event', event);
         }
         if (!controller.signal.aborted) throw new Error('The event stream closed. Reconnecting…');
       } catch (error) {
         if (controller.signal.aborted || epoch !== generation) return;
+        browser.revoke();
+        nativeTools?.close();
         setConnection({
           ...connection,
           state: 'reconnecting',
@@ -184,123 +190,11 @@ function startStream(generation: number) {
     }
   })();
 }
-function disconnectBridge() {
-  clearTimeout(bridgeRetry);
-  clearInterval(bridgeHeartbeat);
-  const previous = socket;
-  socket = undefined;
-  if (previous) {
-    previous.onclose = null;
-    previous.close();
-  }
-  setBridge({ state: 'disconnected' });
-  browser.revoke();
-}
-function connectBridge() {
-  disconnectBridge();
-  if (!ports.size || !settings.bridgeToken) return;
-  const url = new URL('/extension', localUrl(settings.bridgeUrl));
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(url);
-  socket = ws;
-  setBridge({ state: 'connecting' });
-  ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', token: settings.bridgeToken }));
-  ws.onmessage = (event) => {
-    if (socket !== ws) return;
-    let message;
-    try {
-      message = JSON.parse(event.data);
-    } catch {
-      return;
-    }
-    if (message.type === 'ready') {
-      setBridge({ state: 'connected' });
-      bridgeHeartbeat = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-      }, 20_000);
-      void registerMcp().catch((error) =>
-        setBridge({
-          state: 'connected',
-          registered: false,
-          error: errorText(error),
-        }),
-      );
-    }
-    if (message.type === 'tool') void runTool(ws, message);
-  };
-  ws.onerror = () => {
-    /* onclose supplies a useful status and schedules reconnect. */
-  };
-  ws.onclose = (event) => {
-    if (socket !== ws) return;
-    socket = undefined;
-    clearInterval(bridgeHeartbeat);
-    browser.revoke();
-    setBridge({
-      state: 'disconnected',
-      error:
-        event.code === 4003
-          ? 'Pairing token rejected. Check Connection settings.'
-          : event.code === 4009
-            ? 'Another browser is already paired to this bridge.'
-            : 'Browser bridge is offline. Start npm run bridge on this machine.',
-    });
-    if (ports.size && ![4003, 4009].includes(event.code))
-      bridgeRetry = setTimeout(connectBridge, 4000);
-  };
-}
-function registerMcp(): Promise<void> {
-  const generation = epoch,
-    currentSocket = socket,
-    client = backend.client,
-    configuration = { ...settings };
-  const work = registrationQueue.then(async () => {
-    if (
-      epoch !== generation ||
-      socket !== currentSocket ||
-      connection.state !== 'connected' ||
-      bridgeState.state !== 'connected'
-    )
-      return;
-    const result = await client.mcp.add({
-      name: 'open_extension',
-      config: {
-        type: 'remote',
-        url: `${configuration.bridgeUrl}/mcp`,
-        headers: { Authorization: `Bearer ${configuration.bridgeToken}` },
-        enabled: true,
-        oauth: false,
-        timeout: 60_000,
-      },
-    });
-    if (
-      epoch !== generation ||
-      socket !== currentSocket ||
-      currentSocket?.readyState !== WebSocket.OPEN
-    )
-      return;
-    const status = (result.data as any)?.open_extension;
-    if (status?.status !== 'connected')
-      throw new Error(
-        `OpenCode could not register browser tools${status?.error ? `: ${status.error}` : '. Check /mcp on your server.'}`,
-      );
-    setBridge({ state: 'connected', registered: true });
-  });
-  registrationQueue = work.catch(() => {});
-  return work;
-}
-async function runTool(ws: WebSocket, call: ToolCall) {
-  broadcast('tool', {
-    id: call.id,
-    name: call.name,
-    at: Date.now(),
-    status: 'running',
-  });
+async function runTool(call: ToolCall) {
+  broadcast('tool', { id: call.id, name: call.name, at: Date.now(), status: 'running' });
   try {
     if (!ports.size) throw new Error('Open the side panel to authorize browser tools.');
     const data = await browser.call(call);
-    if (ws.readyState === WebSocket.OPEN)
-      ws.send(JSON.stringify({ type: 'result', id: call.id, ok: true, data }));
     broadcast('tool', {
       id: call.id,
       name: call.name,
@@ -308,17 +202,16 @@ async function runTool(ws: WebSocket, call: ToolCall) {
       status: 'completed',
       summary: 'Page observed and result returned to OpenCode.',
     });
+    return data;
   } catch (error) {
-    const text = errorText(error);
-    if (ws.readyState === WebSocket.OPEN)
-      ws.send(JSON.stringify({ type: 'result', id: call.id, ok: false, error: text }));
     broadcast('tool', {
       id: call.id,
       name: call.name,
       at: Date.now(),
       status: 'error',
-      summary: text,
+      summary: errorText(error),
     });
+    throw error;
   }
 }
 function sessionId(value: unknown) {
@@ -334,11 +227,14 @@ async function useSession(id: string) {
     backend = new OpenCode(settings, backend.protocol);
     if (connection.state === 'connected') {
       startStream(epoch);
-      await registerMcp();
+      nativeTools?.close();
+      nativeTools = new NativeTools(backend, runTool, setBrowserConnection, () => browser.revoke());
+      await nativeTools.check();
     }
   }
   await backend.client.session.get({ sessionID: id });
   browser.revoke();
+  nativeTools?.close();
   activeSession = id;
   await chrome.storage.local.set({ activeSession });
   broadcast('session', id);
@@ -392,6 +288,13 @@ async function rpc(method: string, args: any = {}) {
       await persistSettings(paired);
       browser.revoke();
       return connect();
+    }
+    case 'native.install': {
+      if (connection.state !== 'connected' || !nativeTools)
+        throw new Error('Connect to OpenCode first.');
+      const path = await nativeTools.install();
+      startStream(epoch);
+      return path;
     }
     case 'discover':
       return discover({ ...settings, ...args });
@@ -477,9 +380,9 @@ async function rpc(method: string, args: any = {}) {
       const status = (await backend.client.session.status()).data?.[id];
       if (status && status.type !== 'idle')
         throw new Error('This OpenCode session is busy. Wait or stop the current turn.');
-      if (!bridgeState.registered || socket?.readyState !== WebSocket.OPEN)
+      if (!nativeTools || !browserState.registered)
         throw new Error(
-          'Browser tools are not connected. Pair the browser bridge in Connection settings before sending a website request.',
+          'Enable native browser tools in Connection settings before sending a website request.',
         );
       if (!(await userScriptsAvailable()))
         throw new Error(
@@ -487,7 +390,7 @@ async function rpc(method: string, args: any = {}) {
         );
       const currentTab = await activeTab();
       const saved = (await scripts.list()).filter((script) =>
-        script.matches.some((pattern) => matchesUrl(pattern, currentTab.url)),
+        scriptMatchesSite(script, currentTab.url),
       );
       const updating = args.scriptId
         ? saved.find((script) => script.id === args.scriptId)
@@ -514,6 +417,7 @@ async function rpc(method: string, args: any = {}) {
           saved.map(({ code, ...script }) => ({ ...script, code: '' })),
           updating,
         );
+        await nativeTools.attach(id, authorization.token);
         if (backend.protocol !== 'v2') await backend.restrictToBrowser(id);
         await backend.client.session.promptAsync({
           sessionID: id,
@@ -530,6 +434,7 @@ async function rpc(method: string, args: any = {}) {
     }
     case 'abort':
       browser.revoke();
+      nativeTools?.close();
       return (await backend.client.session.abort({ sessionID: sessionId(args.id) })).data;
     case 'permission.reply': {
       const list = (await backend.client.permission.list()).data || [];
@@ -653,7 +558,8 @@ chrome.runtime.onConnect.addListener((port) => {
     ports.delete(port);
     if (!ports.size) {
       stream?.abort();
-      disconnectBridge();
+      nativeTools?.close();
+      setBrowserConnection({ state: 'disconnected' });
       browser.revoke();
     }
   });
@@ -671,18 +577,23 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 chrome.tabs.onActivated.addListener(() => {
   browser.revoke();
+  nativeTools?.close();
   void activeTab()
     .then((tab) => broadcast('tab', tab))
     .catch(() => {});
 });
 chrome.windows.onFocusChanged.addListener(() => {
   browser.revoke();
+  nativeTools?.close();
   void activeTab()
     .then((tab) => broadcast('tab', tab))
     .catch(() => {});
 });
 chrome.tabs.onUpdated.addListener((id, change, tab) => {
-  if (change.url || change.status === 'loading') browser.navigated(id);
+  if (change.url || change.status === 'loading') {
+    if (browser.lease?.tabId === id) nativeTools?.close();
+    browser.navigated(id);
+  }
   if (change.url && tab.active)
     void activeTab()
       .then((info) => broadcast('tab', info))
@@ -696,6 +607,7 @@ for (const event of [
 ])
   event.addListener((details) => {
     if (details.frameId !== 0) return;
+    if (browser.lease?.tabId === details.tabId) nativeTools?.close();
     browser.navigated(details.tabId);
     void scripts.reconcileTab(details.tabId, details.url, true).catch(() => {});
   });

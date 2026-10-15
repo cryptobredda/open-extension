@@ -3,12 +3,8 @@ import http from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { OpenCode as NativeOpenCode } from '@opencode/client';
-import { startBridge } from '../../bridge/server';
+import nativePlugin from '../../src/native/plugin';
 
-const bridgeToken = 'native-v2-test-bridge-token-at-least-32-chars';
 const servicePassword = 'native-v2-test-server-password';
 const sid = 'ses_v2test12345';
 const location = { directory: '/test/project' };
@@ -41,6 +37,30 @@ async function nativeFixture() {
         `data: ${JSON.stringify({ id: `evt_${Date.now()}`, type, created: Date.now(), data })}\n\n`,
       );
   };
+  let rpcHandlers: Record<string, (input: any) => Promise<any>> = {};
+  const nativeTools: any[] = [];
+  const cleanup = await nativePlugin.setup({
+    location,
+    session: { get: async () => session },
+    rpc: {
+      register: async (_definition: any, handlers: any) => {
+        rpcHandlers = handlers;
+        return {
+          dispose: async () => {},
+          events: {
+            emit: async (name: string, data: any) =>
+              emit(`rpc.open-extension.browser.${name}`, data),
+          },
+        };
+      },
+    },
+    tool: {
+      transform: async (edit: any) => {
+        edit({ namespace: () => {}, add: (tool: any) => nativeTools.push(tool) });
+        return { dispose: async () => {} };
+      },
+    },
+  } as any);
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url!, 'http://localhost');
     requests.push(`${req.method} ${url.pathname}`);
@@ -124,24 +144,15 @@ async function nativeFixture() {
       json({ location, data: [] });
       return;
     }
-    if (url.pathname === '/api/experimental/mcp/open_extension') {
+    if (url.pathname.startsWith('/api/rpc/open-extension.browser/')) {
       let body = '';
       for await (const part of req) body += part;
-      const parsed = JSON.parse(body);
-      if (
-        parsed.config.disabled !== false ||
-        parsed.config.codemode !== false ||
-        typeof parsed.config.timeout?.execution !== 'number' ||
-        'enabled' in parsed.config
-      ) {
-        json({ error: 'Wrong MCP config generation' }, 400);
-        return;
+      const method = decodeURIComponent(url.pathname.split('/').at(-1)!);
+      try {
+        json({ output: await rpcHandlers[method](JSON.parse(body).input) });
+      } catch (error) {
+        json({ _tag: 'RpcInternalError', message: (error as Error).message }, 500);
       }
-      res.writeHead(204).end();
-      return;
-    }
-    if (url.pathname === '/api/mcp') {
-      json({ location, data: [{ name: 'open_extension', status: { status: 'connected' } }] });
       return;
     }
     if (url.pathname === '/api/session') {
@@ -216,6 +227,12 @@ async function nativeFixture() {
   return {
     url,
     requests,
+    call: async (name: string, args: any) => {
+      const tool = nativeTools.find((tool) => tool.name === name);
+      if (!tool) throw new Error('Unknown browser tool');
+      return (await tool.execute(args, { sessionID: sid, signal: new AbortController().signal }))
+        .output;
+    },
     instructions: () => instructions,
     prompt: () => prompt,
     complete: () => {
@@ -280,6 +297,7 @@ async function nativeFixture() {
       emit('session.idle', { sessionID: sid });
     },
     close: async () => {
+      await cleanup?.();
       for (const stream of streams) stream.end();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -328,12 +346,10 @@ async function rpc(page: Page, method: string, args?: unknown) {
   return result.data;
 }
 
-test('OpenCode 2 pairing UI, native prompt/instructions/events and real browser MCP workflow', async ({}, testInfo) => {
+test('OpenCode 2 pairing, native RPC DOM workflow, event streaming and reversible scripts', async ({}, testInfo) => {
   const fixture = await nativeFixture(),
-    bridge = await startBridge({ port: 0, token: bridgeToken }),
     profile = await mkdtemp(join(tmpdir(), 'open-extension-native-'));
   let context: BrowserContext | undefined;
-  const agent = new Client({ name: 'native-opencode-agent-fixture', version: '2' });
   try {
     const launched = await launch(profile);
     context = launched.context;
@@ -341,13 +357,13 @@ test('OpenCode 2 pairing UI, native prompt/instructions/events and real browser 
     await panel
       .getByLabel('OpenCode pairing link', { exact: true })
       .fill(`${fixture.url}/auth/connect/fresh-native-test-code`);
-    await panel.getByLabel('Bridge URL', { exact: true }).fill(`http://127.0.0.1:${bridge.port}`);
-    await panel.getByLabel('Browser bridge token', { exact: true }).fill(bridgeToken);
     await panel.getByRole('button', { name: 'Pair & connect', exact: true }).click();
     await expect
       .poll(async () => (await rpc(panel, 'snapshot')).connection.state)
       .toBe('connected');
-    await expect.poll(async () => (await rpc(panel, 'snapshot')).bridge.registered).toBe(true);
+    await expect
+      .poll(async () => (await rpc(panel, 'snapshot')).browserConnection.registered)
+      .toBe(true);
     expect((await rpc(panel, 'snapshot')).connection.protocol).toBe('v2');
     await panel.screenshot({ path: testInfo.outputPath('v2-connected.png') });
     await panel.getByRole('button', { name: 'Close settings' }).click();
@@ -358,18 +374,18 @@ test('OpenCode 2 pairing UI, native prompt/instructions/events and real browser 
     await rpc(panel, 'send', { id: sid, text: 'Hide the promotion and verify the change.' });
     expect(fixture.prompt()).toEqual({ text: 'Hide the promotion and verify the change.' });
     const contextToken = fixture.instructions().match(/THIS turn: ([\w-]+)/)![1];
-    await agent.connect(
-      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${bridge.port}/mcp`), {
-        requestInit: { headers: { Authorization: `Bearer ${bridgeToken}` } },
-      }),
-    );
-    const call = async (name: string, args: any = {}) => {
-      const result = await agent.callTool({ name, arguments: { context: contextToken, ...args } });
-      const text = (result.content as any[])[0].text;
-      if (result.isError) throw new Error(text);
-      return JSON.parse(text);
-    };
+    const call = async (name: string, args: any = {}) =>
+      fixture.call(name, { context: contextToken, ...args });
     expect((await call('browser_observe')).title).toBe('Native test page');
+    const live = await call('browser_execute', {
+      code: 'api.text("h1", "Changed in Chrome"); api.on(document.querySelector("main"), "click", () => api.attr("main", "data-clicked", "yes")); return {title:document.querySelector("h1").textContent};',
+    });
+    expect(live.result.title).toBe('Changed in Chrome');
+    await target.locator('main').click();
+    await expect(target.locator('main')).toHaveAttribute('data-clicked', 'yes');
+    await call('browser_reset');
+    await expect(target.locator('h1')).toHaveText('Original');
+    await expect(target.locator('main')).not.toHaveAttribute('data-clicked', 'yes');
     await call('browser_css', { css: '.promo{display:none!important}' });
     await expect(target.locator('.promo')).toBeHidden();
     await call('site_script_propose', {
@@ -378,8 +394,15 @@ test('OpenCode 2 pairing UI, native prompt/instructions/events and real browser 
       matches: ['*://127.0.0.1/*'],
       code: 'api.hide(".promo");',
     });
-    await panel.getByRole('button', { name: 'Save site script', exact: true }).click();
+    await panel.getByRole('button', { name: 'Install', exact: true }).click();
     await expect.poll(async () => (await rpc(panel, 'snapshot')).scripts.length).toBe(1);
+    const other = await context.newPage();
+    await other.goto(`${fixture.url}/page`);
+    await other.bringToFront();
+    await expect(
+      call('browser_execute', { code: 'document.body.dataset.wrong="yes"' }),
+    ).rejects.toThrow(/not authorized|changed|no longer authorized/);
+    expect(await other.evaluate(() => document.body.dataset.wrong)).toBeUndefined();
     fixture.complete();
     await expect(panel.getByText('Backend native v2 reasoning.', { exact: true })).toBeVisible();
     await expect(panel.getByText('Unit 1', { exact: true })).toBeVisible();
@@ -400,94 +423,130 @@ test('OpenCode 2 pairing UI, native prompt/instructions/events and real browser 
     ).rejects.toThrow('expired, already used');
     expect((await rpc(panel, 'snapshot')).connection.state).toBe('connected');
   } finally {
-    await agent.close().catch(() => {});
     await context?.close();
     await fixture.close();
-    await bridge.close();
     await rm(profile, { recursive: true, force: true });
   }
 });
 
-test('actual OpenCode 2.0.29: pair through the extension, attach sessions, register MCP, manage native instructions and forms', async ({}, testInfo) => {
-  test.skip(
-    !process.env.OPENCODE2_TEST_URL,
-    'Set OPENCODE2_TEST_URL and OPENCODE2_TEST_PASSWORD for a native v2 test server.',
-  );
-  const url = process.env.OPENCODE2_TEST_URL!,
-    password = process.env.OPENCODE2_TEST_PASSWORD!;
-  const api = NativeOpenCode.make({
-    baseUrl: url,
-    headers: { Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` },
-  });
-  const bridge = await startBridge({ port: 0, token: bridgeToken }),
-    profile = await mkdtemp(join(tmpdir(), 'open-extension-real-v2-'));
-  let context: BrowserContext | undefined, id: string | undefined;
+test('script library filters the current website, searches/sorts, edits and survives a browser restart', async ({}, testInfo) => {
+  const fixture = await nativeFixture(),
+    profile = await mkdtemp(join(tmpdir(), 'open-extension-library-'));
+  let context: BrowserContext | undefined;
   try {
-    const pair = await api.server.pair(),
-      launched = await launch(profile);
+    const launched = await launch(profile);
     context = launched.context;
-    const panel = launched.panel;
-    await panel
-      .getByLabel('OpenCode pairing link', { exact: true })
-      .fill(`${url}/auth/connect/${pair.code}`);
-    await panel.getByLabel('Bridge URL', { exact: true }).fill(`http://127.0.0.1:${bridge.port}`);
-    await panel.getByLabel('Browser bridge token', { exact: true }).fill(bridgeToken);
-    await panel.getByRole('button', { name: 'Pair & connect', exact: true }).click();
-    await expect
-      .poll(async () => (await rpc(panel, 'snapshot')).connection.state)
-      .toBe('connected');
-    await expect.poll(async () => (await rpc(panel, 'snapshot')).bridge.registered).toBe(true);
-    const snapshot = await rpc(panel, 'snapshot');
-    expect(snapshot.connection.version).toBe('2.0.29');
-    expect(snapshot.connection.spec).toContain('/openapi.json');
-    expect(snapshot.settings.password.length).toBeGreaterThan(0);
+    const panel = launched.panel,
+      id = panel.url().split('/')[2];
+    await rpc(panel, 'settings.save', {
+      serverUrl: fixture.url,
+      password: servicePassword,
+      rememberPassword: false,
+    });
     await panel.getByRole('button', { name: 'Close settings' }).click();
-    const session = await rpc(panel, 'session.create');
-    id = session.id;
-    expect((await api.session.get({ sessionID: id! })).id).toBe(id);
-    await api.session.instructions.entry.put({
-      sessionID: id!,
-      key: 'open-extension-test',
-      value: 'Inspect this session using the native v2 API.',
-    });
-    expect(
-      (await api.session.instructions.entry.list({ sessionID: id! })).some(
-        (entry) => entry.key === 'open-extension-test',
-      ),
-    ).toBe(true);
-    expect(await rpc(panel, 'messages', { id })).toEqual([]);
-    expect(
-      (await api.mcp.list({ location: { directory: session.directory } })).data.find(
-        (server) => server.name === 'open_extension',
-      )?.status.status,
-    ).toBe('connected');
-    const form = await api.session.form.create({
-      sessionID: id!,
-      title: 'Native v2 test question',
-      fields: [
-        { key: 'confirm', type: 'string', title: 'Confirm the v2 integration', required: true },
-        {
-          key: 'optionalChoice',
-          type: 'boolean',
-          title: 'Use the optional choice',
-          required: true,
-        },
+    const target = await context.newPage();
+    await target.goto(`${fixture.url}/page`);
+    await target.bringToFront();
+    const save = (name: string, matches: string[], code: string, enabled = true) =>
+      rpc(panel, 'scripts.save', {
+        id: name.toLowerCase().replaceAll(' ', '-'),
+        name,
+        description: `Saved behavior: ${name}`,
+        matches,
+        code,
+        enabled,
+        world: 'USER_SCRIPT',
+        revision: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      });
+    const focus = await save('Focus website', ['*://127.0.0.1/*'], 'api.hide(".promo");');
+    await save('Another website', ['*://example.com/*'], 'api.css("aside{display:none}");');
+    await save(
+      'Alternate layout',
+      ['*://127.0.0.1/another-route/*'],
+      'api.hide(".another");',
+      false,
+    );
+    await expect(target.locator('.promo')).toBeHidden();
+    await panel.getByRole('tab', { name: /Scripts/ }).click();
+    await expect(panel.getByRole('button', { name: /This site/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(panel.locator('.library-script')).toHaveCount(2);
+    await expect(panel.locator('.library-script-title')).toHaveText([
+      'Alternate layout',
+      'Focus website',
+    ]);
+    await expect(panel.getByRole('button', { name: 'Another website', exact: true })).toHaveCount(
+      0,
+    );
+    await panel.getByRole('button', { name: /All sites/ }).click();
+    await expect(panel.locator('.library-script')).toHaveCount(3);
+    await expect(panel.locator('.library-script-title')).toHaveText([
+      'Alternate layout',
+      'Focus website',
+      'Another website',
+    ]);
+    await panel.getByRole('textbox', { name: 'Search site scripts' }).fill('example.com');
+    await expect(panel.locator('.library-script')).toHaveCount(1);
+    await panel.getByRole('button', { name: 'Clear script search' }).click();
+    await panel.getByRole('combobox', { name: 'Sort site scripts' }).selectOption('name');
+    await expect(panel.locator('.library-script-title')).toHaveText([
+      'Alternate layout',
+      'Another website',
+      'Focus website',
+    ]);
+    await panel.getByRole('combobox', { name: 'Filter script status' }).selectOption('disabled');
+    await expect(panel.locator('.library-script-title')).toHaveText('Alternate layout');
+    await panel.getByRole('combobox', { name: 'Filter script status' }).selectOption('all');
+    await panel.getByRole('button', { name: /This site/ }).click();
+    await panel.screenshot({ path: testInfo.outputPath('site-scripts-library.png') });
+    await panel.getByRole('switch', { name: 'Enable Focus website' }).click();
+    await expect(target.locator('.promo')).toBeVisible();
+    await panel.getByRole('switch', { name: 'Enable Focus website' }).click();
+    await expect(target.locator('.promo')).toBeHidden();
+    const prefs = await panel.evaluate(() => chrome.storage.local.get('scriptLibraryPreferences'));
+    expect(prefs.scriptLibraryPreferences).toEqual({ sort: 'name', status: 'all' });
+    await context.close();
+    context = undefined;
+    context = await chromium.launchPersistentContext(profile, {
+      channel: 'chromium',
+      headless: true,
+      ignoreDefaultArgs: ['--disable-extensions'],
+      args: [
+        '--no-sandbox',
+        `--disable-extensions-except=${resolve('dist')}`,
+        `--load-extension=${resolve('dist')}`,
       ],
+      viewport: { width: 360, height: 850 },
     });
-    await expect(panel.getByText('Native v2 test question', { exact: true })).toBeVisible();
-    await panel.getByLabel('Confirm the v2 integration', { exact: true }).fill('Confirmed');
-    await panel.getByRole('button', { name: 'Send answers', exact: true }).click();
+    const persisted = await context.newPage();
+    await persisted.goto(`${fixture.url}/page`);
+    await expect(persisted.locator('.promo')).toBeHidden();
+    const reopened = await context.newPage();
+    await reopened.goto(`chrome-extension://${id}/sidepanel.html`);
+    await persisted.bringToFront();
+    const snapshot = await rpc(reopened, 'snapshot');
+    expect(snapshot.settings.password).toBe('');
+    expect(snapshot.scripts).toHaveLength(3);
+    await reopened.getByRole('tab', { name: /Scripts/ }).click();
+    await expect(reopened.getByRole('combobox', { name: 'Sort site scripts' })).toHaveValue('name');
+    await reopened.getByRole('button', { name: 'Delete Focus website', exact: true }).click();
+    await reopened.getByRole('button', { name: 'Delete', exact: true }).click();
+    await expect(persisted.locator('.promo')).toBeVisible();
     await expect
-      .poll(
-        async () => (await api.session.form.get({ sessionID: id!, formID: form.id })).state.status,
+      .poll(async () =>
+        (await rpc(reopened, 'snapshot')).scripts.some((s: any) => s.id === focus.id),
       )
-      .toBe('answered');
-    await panel.screenshot({ path: testInfo.outputPath('actual-opencode-2.0.29.png') });
+      .toBe(false);
+    expect(
+      await reopened.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
   } finally {
-    if (id) await api.session.remove({ sessionID: id }).catch(() => {});
-    await api.mcp.remove({ server: 'open_extension' }).catch(() => {});
     await context?.close();
-    await bridge.close();
+    await fixture.close();
     await rm(profile, { recursive: true, force: true });
   }
 });

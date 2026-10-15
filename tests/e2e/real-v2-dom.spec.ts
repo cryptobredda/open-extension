@@ -6,11 +6,9 @@ import net from 'node:net';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { startBridge } from '../../bridge/server';
 import { BROWSER_TOOLS } from '../../src/shared/browser-context';
 
 const password = 'isolated-opencode-dom-test-password';
-const bridgeToken = 'isolated-browser-dom-test-bridge-token-32';
 // Different containers/selectors on different routes; no hardcoded page classes in the script.
 const initialCode = `api.watch(() => {
   for (const heading of document.querySelectorAll('h2, [role="heading"]')) {
@@ -77,11 +75,12 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
       let message: any = { role: 'assistant', content: 'Website DOM changes' };
       if (names.length) {
         requests.push(body);
-        expect(new Set(names)).toEqual(
-          new Set(BROWSER_TOOLS.map((name) => `open_extension_${name}`)),
-        );
+        expect(names).toEqual(['execute']);
         const text = JSON.stringify(body.messages);
         expect(text).toContain('browser-only session');
+        for (const name of BROWSER_TOOLS) expect(text).toContain(name);
+        expect(text).not.toContain('tools.opencode.read');
+        expect(text).not.toContain('tools.opencode.shell');
         expect(text).toContain('relevant people');
         expect(text).toContain('untrusted_page_observation');
         expect(text).toContain('/page');
@@ -114,9 +113,9 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
         ];
         if (index === 3) {
           const tool = body.messages.filter((message: any) => message.role === 'tool').at(-1);
-          expect(tool?.content).toContain('"removed":true');
-          expect(tool?.content).toContain('"main":true');
-          expect(tool?.content).toContain('"trends":true');
+          expect(tool?.content).toMatch(/"removed"\s*:\s*true/);
+          expect(tool?.content).toMatch(/"main"\s*:\s*true/);
+          expect(tool?.content).toMatch(/"trends"\s*:\s*true/);
         }
         if (index < steps.length) {
           const step = steps[index];
@@ -130,8 +129,10 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
                 id: `call_${token}_${index}`,
                 type: 'function',
                 function: {
-                  name: `open_extension_${step.name}`,
-                  arguments: JSON.stringify({ context: token, ...step.args }),
+                  name: 'execute',
+                  arguments: JSON.stringify({
+                    code: `return await tools.open_extension.${step.name}(${JSON.stringify({ context: token, ...step.args })});`,
+                  }),
                 },
               },
             ],
@@ -171,7 +172,6 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
   });
   await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
   const site = `http://127.0.0.1:${(provider.address() as net.AddressInfo).port}`;
-  const bridge = await startBridge({ port: 0, token: bridgeToken });
   try {
     for (const name of ['config', 'data', 'state', 'project', 'chrome'])
       await mkdir(join(root, name));
@@ -275,10 +275,15 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
       serverUrl: url,
       password,
       rememberPassword: true,
-      bridgeUrl: `http://127.0.0.1:${bridge.port}`,
-      bridgeToken,
     });
-    await expect.poll(async () => (await rpc(panel, 'snapshot')).bridge.registered).toBe(true);
+    await panel.getByRole('button', { name: 'Enable native browser tools', exact: true }).click();
+    await expect
+      .poll(async () => (await rpc(panel, 'snapshot')).browserConnection.registered)
+      .toBe(true);
+    const nativePlugin = (await api.plugin.list()).data.find(
+      (p) => p.id === 'open-extension.native',
+    );
+    expect(nativePlugin?.state.status).toBe('active');
     await panel.getByRole('button', { name: 'Close settings' }).click();
     await panel.getByRole('button', { name: 'Choose OpenCode model' }).click();
     await panel
@@ -310,12 +315,10 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
     await target.bringToFront();
     await rpc(panel, 'send', { id: session.id, text: 'remove the "relevant people" section' });
     await expect(target.locator('[data-section=people]')).toHaveCount(0);
-    await expect(
-      panel.getByRole('button', { name: 'Save site script', exact: true }),
-    ).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Install', exact: true })).toBeVisible();
     expect(errors).toEqual([]);
     await expect(panel.getByText('OpenCode turn finished.', { exact: true })).toBeVisible();
-    await panel.getByRole('button', { name: 'Save site script', exact: true }).click();
+    await panel.getByRole('button', { name: 'Install', exact: true }).click();
     const saved = (await rpc(panel, 'snapshot')).scripts[0];
     expect(saved.matches).toEqual(['*://127.0.0.1/*']);
     await target.reload();
@@ -334,6 +337,11 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
     await expect(target.locator('[data-section=people]')).toHaveCount(2);
     await target.goto(`${site}/page/alternate`);
     await expect(target.locator('[data-section=people]')).toBeVisible();
+    await panel.getByRole('tab', { name: /Scripts/ }).click();
+    await expect(panel.getByRole('button', { name: /This site/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     await panel.getByRole('button', { name: 'Update Hide relevant people with OpenCode' }).click();
     await panel
       .getByRole('textbox', { name: 'Message OpenCode' })
@@ -383,7 +391,6 @@ test('real OpenCode 2 routes only browser tools, selects connected models, remov
           resolve();
         }, 3000).unref();
       });
-    await bridge.close();
     provider.closeAllConnections();
     await new Promise<void>((resolve) => provider.close(() => resolve()));
     await rm(root, { recursive: true, force: true });

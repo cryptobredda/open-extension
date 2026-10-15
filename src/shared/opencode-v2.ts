@@ -18,12 +18,14 @@ export function v2Session(info: SessionInfo): Session {
 export function structuredError(error: unknown): string {
   if (typeof error === 'string') return error;
   const value = error as any;
-  return (
+  const message =
     value?.message ||
     value?.data?.message ||
     value?.description ||
-    JSON.stringify(error ?? 'OpenCode reported an error.')
-  );
+    JSON.stringify(error ?? 'OpenCode reported an error.');
+  return message.includes("OpenCode's free tier can only be used from within OpenCode")
+    ? `${message} This provider rejected the browser-only tool configuration. Choose another connected model in the composer; reconnecting browser tools will not resolve this provider restriction.`
+    : message;
 }
 export function v2ToolPart(
   sessionID: string,

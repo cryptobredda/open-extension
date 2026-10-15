@@ -37,7 +37,7 @@ import type {
   Part,
   BackendEvent,
   ConnectionState,
-  BridgeState,
+  BrowserConnectionState,
   TabInfo,
   PermissionRequest,
   QuestionRequest,
@@ -47,7 +47,8 @@ import { DEFAULT_SETTINGS } from '../shared/types';
 import { reduceConversation } from '../shared/conversation';
 import { rpc } from './api';
 import { ModelPicker } from './ModelPicker';
-import { matchesUrl } from '../shared/validation';
+import { ScriptsView } from './ScriptsView';
+import { siteHostname } from '../shared/script-library';
 
 function Logo({ small = false }: { small?: boolean }) {
   return (
@@ -207,7 +208,7 @@ function MessageView({
     <article className={`message ${user ? 'user' : 'assistant'}`}>
       <div className="message-heading">
         {user ? <span className="user-avatar">Y</span> : <Logo small />}
-        <strong>{user ? 'You' : 'OpenCode'}</strong>
+        <strong>{user ? 'You' : 'Open Extension'}</strong>
         {!user && 'modelID' in message.info && (
           <span className="model-label">{message.info.modelID}</span>
         )}
@@ -249,7 +250,9 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectionState>({
     state: 'disconnected',
   });
-  const [bridge, setBridge] = useState<BridgeState>({ state: 'disconnected' });
+  const [browserConnection, setBrowserConnection] = useState<BrowserConnectionState>({
+    state: 'disconnected',
+  });
   const [tab, setTab] = useState<TabInfo | null>(null);
   const [scripts, setScripts] = useState<SiteScript[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
@@ -263,11 +266,10 @@ export default function App() {
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
-  const [view, setView] = useState<'settings' | 'sessions' | null>(
+  const [view, setView] = useState<'settings' | 'sessions' | 'scripts' | null>(
     location.hash === '#settings' ? 'settings' : null,
   );
   const [editor, setEditor] = useState<SiteScript | null>(null);
-  const [scriptsOpen, setScriptsOpen] = useState(true);
   const [userScripts, setUserScripts] = useState(true);
   const [permissions, setPermissions] = useState<PermissionRequest[]>([]);
   const [questions, setQuestions] = useState<QuestionRequest[]>([]);
@@ -333,7 +335,7 @@ export default function App() {
         if (message.type === 'snapshot') {
           setSettings(data.settings);
           setConnection(data.connection);
-          setBridge(data.bridge);
+          setBrowserConnection(data.browserConnection);
           setScripts(data.scripts);
           setProposals(data.proposals);
           setTab(data.tab);
@@ -354,13 +356,14 @@ export default function App() {
             else setLoading(false);
           }
         }
-        if (message.type === 'bridge') setBridge(data);
+        if (message.type === 'browserConnection') setBrowserConnection(data);
         if (message.type === 'tab') setTab(data);
         if (message.type === 'scripts') setScripts(data);
         if (message.type === 'proposals') setProposals(data);
         if (message.type === 'settings') setSettings(data);
         if (message.type === 'model.changed') setModelRevision((value) => value + 1);
         if (message.type === 'session') {
+          if (data !== sessionRef.current) setEditingScriptId('');
           setSession(data);
           sessionRef.current = data;
           if (!data) {
@@ -530,7 +533,6 @@ export default function App() {
         <div className="brand">
           <Logo small />
           <h1>Open Extension</h1>
-          <span className="beta-tag">LOCAL</span>
         </div>
         <div className="header-actions">
           <button
@@ -560,6 +562,36 @@ export default function App() {
           </button>
         </div>
       </header>
+      <nav className="top-tabs" role="tablist" aria-label="Open Extension views">
+        <button role="tab" aria-selected={view !== 'scripts'} onClick={() => setView(null)}>
+          Chat
+        </button>
+        <button role="tab" aria-selected={view === 'scripts'} onClick={() => setView('scripts')}>
+          Scripts <span>{scripts.length}</span>
+        </button>
+        <span className="top-tabs-spacer" />
+        <button
+          className="icon-button"
+          aria-label="Undo temporary changes"
+          title="Undo temporary changes"
+          onClick={() =>
+            perform(async () => {
+              await rpc('experiments.reset');
+              notice('Temporary changes cleaned up. Reload to clear untracked JavaScript.');
+            })
+          }
+        >
+          <Undo2 size={13} />
+        </button>
+        <button
+          className="icon-button"
+          aria-label="Open OpenCode web client"
+          title="Fast Open"
+          onClick={() => perform(() => rpc('fast.open'))}
+        >
+          <ExternalLink size={13} />
+        </button>
+      </nav>
       <div className="session-bar">
         <span className="session-title" title={title}>
           {title}
@@ -591,7 +623,7 @@ export default function App() {
         <ConnectionSettings
           settings={settings}
           connection={connection}
-          bridge={bridge}
+          browserConnection={browserConnection}
           userScripts={userScripts}
           onClose={() => setView(null)}
           onSaved={(value) => {
@@ -599,6 +631,39 @@ export default function App() {
             void rpc('snapshot').then((data) => setUserScripts(data.userScripts));
           }}
           onError={setError}
+        />
+      ) : view === 'scripts' ? (
+        <ScriptsView
+          scripts={scripts}
+          tab={tab}
+          connected={connected}
+          onClose={() => setView(null)}
+          onAdd={() =>
+            setEditor({
+              id: crypto.randomUUID(),
+              name: '',
+              description: '',
+              matches: [`*://${siteHostname(tab?.url) || 'example.com'}/*`],
+              code: '// Use api helpers so changes can be undone.\napi.css(`\n  /* Your CSS here */\n`);',
+              enabled: true,
+              world: 'USER_SCRIPT',
+              revision: 1,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            })
+          }
+          onEdit={setEditor}
+          onUpdate={(script) => {
+            setEditingScriptId(script.id);
+            setView(null);
+            setTimeout(() => composer.current?.focus(), 0);
+          }}
+          onToggle={(script) => {
+            void perform(() => rpc('scripts.toggle', { id: script.id, enabled: !script.enabled }));
+          }}
+          onDelete={async (script) => {
+            await perform(() => rpc('scripts.delete', { id: script.id }));
+          }}
         />
       ) : view === 'sessions' ? (
         <div className="overlay-view">
@@ -660,63 +725,22 @@ export default function App() {
               </div>
             ) : !messages.length ? (
               <div className="welcome">
-                <div className="welcome-symbol">
-                  <Logo />
-                </div>
-                <span className="eyebrow">YOUR BROWSER. YOUR OPENCODE.</span>
-                <h2>
-                  A little more control.
-                  <br />
-                  <span>A lot more possibility.</span>
-                </h2>
+                <div className="welcome-wordmark">Open Extension</div>
                 <p>
-                  Make the web work your way.
+                  Ask about this page, or tell the agent
                   <br />
-                  Describe a change. Watch it happen. Keep what works.
+                  what you’d like to change.
                 </p>
-                <div className="suggestions">
-                  {[
-                    {
-                      icon: <Sparkles size={16} />,
-                      title: 'Give this page a new look',
-                      text: 'Restyle this page with a clean, readable dark theme. Apply the change, verify it, and propose a reversible site script.',
-                    },
-                    {
-                      icon: <Code2 size={16} />,
-                      title: 'Remove the distractions',
-                      text: 'Observe this page and hide distracting sidebars and promotional elements. Keep the main content. Verify the changes and propose a reversible site script.',
-                    },
-                    {
-                      icon: <Search size={16} />,
-                      title: 'Understand this page',
-                      text: 'Observe the active tab and summarize its content and interactive elements without modifying the page.',
-                    },
-                  ].map((item) => (
-                    <button
-                      key={item.title}
-                      disabled={!connected || sending}
-                      onClick={() => send(item.text)}
-                    >
-                      {item.icon}
-                      <span>{item.title}</span>
-                      <ArrowRight size={13} />
-                    </button>
-                  ))}
-                </div>
                 {!connected && (
                   <button className="connect-cta" onClick={() => setView('settings')}>
                     <Plug size={14} /> Connect your local OpenCode <ArrowRight size={13} />
                   </button>
                 )}
-                {connected && !bridge.registered && (
+                {connected && !browserConnection.registered && (
                   <button className="connect-cta" onClick={() => setView('settings')}>
-                    <Plug size={14} /> Pair browser tools <ArrowRight size={13} />
+                    <Plug size={14} /> Enable browser tools <ArrowRight size={13} />
                   </button>
                 )}
-                <div className="privacy-note">
-                  <i />
-                  Models, tools, and history stay on your OpenCode backend.
-                </div>
               </div>
             ) : (
               <div className="messages">
@@ -806,13 +830,18 @@ export default function App() {
               <div className="approval-card site-proposal" key={proposal.id}>
                 <div className="approval-heading">
                   <FileCode2 size={16} />
-                  <strong>Update site script?</strong>
+                  <strong>
+                    {proposal.scriptId ? 'Update site script?' : 'Install site script?'}
+                  </strong>
                   <span className="verified-label">
                     <Check size={11} /> Observed
                   </span>
                 </div>
                 <h3>{proposal.name}</h3>
                 <p>{proposal.description}</p>
+                <div className="script-review-note">
+                  Runs in the page’s JavaScript context. Review the code before installing.
+                </div>
                 <div className="domain-tags">
                   {proposal.matches.map((pattern) => (
                     <code key={pattern}>{pattern}</code>
@@ -820,7 +849,7 @@ export default function App() {
                 </div>
                 <details>
                   <summary>
-                    Review code <ChevronDown size={12} />
+                    Show code <ChevronDown size={12} />
                   </summary>
                   <pre>{proposal.code}</pre>
                 </details>
@@ -835,13 +864,13 @@ export default function App() {
                     }
                   >
                     <Check size={13} />
-                    {proposal.scriptId ? 'Update script' : 'Save site script'}
+                    {proposal.scriptId ? 'Update script' : 'Install'}
                   </button>
                   <button
                     className="text-button"
                     onClick={() => perform(() => rpc('proposal.dismiss', { id: proposal.id }))}
                   >
-                    Keep temporary
+                    Deny
                   </button>
                 </div>
               </div>
@@ -872,122 +901,6 @@ export default function App() {
               </button>
             )}
           </main>
-          <section className={`scripts-section ${scriptsOpen ? 'expanded' : ''}`}>
-            <div className="scripts-heading">
-              <button
-                className="section-toggle"
-                onClick={() => setScriptsOpen(!scriptsOpen)}
-                aria-expanded={scriptsOpen}
-              >
-                <ChevronRight size={13} className={scriptsOpen ? 'rotated' : ''} />
-                <FileCode2 size={13} />
-                <span>Site scripts</span>
-                <span className="count-badge">{scripts.length}</span>
-              </button>
-              <div>
-                <button
-                  className="icon-button"
-                  aria-label="Undo temporary changes"
-                  title="Undo temporary changes made with cleanup helpers"
-                  onClick={() =>
-                    perform(async () => {
-                      await rpc('experiments.reset');
-                      notice('Temporary changes cleaned up. Reload to clear untracked JavaScript.');
-                    })
-                  }
-                >
-                  <Undo2 size={13} />
-                </button>
-                <button
-                  className="icon-button"
-                  aria-label="Add site script"
-                  title="Add site script"
-                  onClick={() =>
-                    setEditor({
-                      id: crypto.randomUUID(),
-                      name: '',
-                      description: '',
-                      matches: [`*://${hostname.includes('.') ? hostname : 'example.com'}/*`],
-                      code: '// Changes made with api are undone when this script is disabled.\napi.css(`\n  /* Your CSS here */\n`);',
-                      enabled: true,
-                      world: 'USER_SCRIPT',
-                      revision: 1,
-                      createdAt: Date.now(),
-                      updatedAt: Date.now(),
-                    })
-                  }
-                >
-                  <Plus size={14} />
-                </button>
-              </div>
-            </div>
-            {scriptsOpen && (
-              <div className="scripts-list">
-                {!scripts.length ? (
-                  <div className="empty-scripts">
-                    <span>No saved scripts yet.</span>
-                    <span>Keep a change after OpenCode verifies it.</span>
-                  </div>
-                ) : (
-                  scripts.map((script) => (
-                    <div
-                      className={`script-item ${script.enabled ? '' : 'disabled'}`}
-                      key={script.id}
-                    >
-                      <span className="script-icon">
-                        <Code2 size={15} />
-                      </span>
-                      <button
-                        className="script-description"
-                        onClick={() => setEditor(script)}
-                        title="Review or edit script"
-                      >
-                        <strong>{script.name}</strong>
-                        <span className="script-domains">
-                          {script.matches
-                            .map((pattern) => pattern.replace(/^\*:\/\//, '').replace(/\/\*$/, ''))
-                            .join(', ')}
-                        </span>
-                        <small>{script.description}</small>
-                      </button>
-                      <button
-                        className="icon-button"
-                        aria-label={`Update ${script.name} with OpenCode`}
-                        title="Teach this script another page layout"
-                        disabled={
-                          !connected ||
-                          !tab?.supported ||
-                          !script.matches.some((pattern) => matchesUrl(pattern, tab.url))
-                        }
-                        onClick={() => {
-                          setEditingScriptId(script.id);
-                          composer.current?.focus();
-                        }}
-                      >
-                        <Sparkles size={13} />
-                      </button>
-                      <button
-                        className={`toggle ${script.enabled ? 'on' : ''}`}
-                        role="switch"
-                        aria-checked={script.enabled}
-                        aria-label={`Enable ${script.name}`}
-                        onClick={() =>
-                          perform(() =>
-                            rpc('scripts.toggle', {
-                              id: script.id,
-                              enabled: !script.enabled,
-                            }),
-                          )
-                        }
-                      >
-                        <i />
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
-          </section>
           <div className="composer-area">
             <div className={`composer ${!connected ? 'inactive' : ''}`}>
               {editingScriptId && (
@@ -1006,23 +919,6 @@ export default function App() {
                   </button>
                 </div>
               )}
-              {connected && (
-                <div className="model-row">
-                  <ModelPicker
-                    session={session}
-                    revision={modelRevision}
-                    preference={settings.model}
-                    disabled={busy || sending}
-                    onError={setError}
-                  />
-                  <span
-                    className="browser-mode"
-                    title="Only this website’s DOM tools are available to the agent"
-                  >
-                    Browser only
-                  </span>
-                </div>
-              )}
               <textarea
                 ref={composer}
                 aria-label="Message OpenCode"
@@ -1030,7 +926,9 @@ export default function App() {
                   connected
                     ? editingScriptId
                       ? 'What should this script also change on this page?'
-                      : 'What would you like to change on this website?'
+                      : busy
+                        ? 'Steer the agent…'
+                        : 'Ask anything…'
                     : 'Connect OpenCode to get started…'
                 }
                 value={input}
@@ -1049,13 +947,23 @@ export default function App() {
                 }}
               />
               <div className="composer-tools">
-                <span
-                  className={`tab-context ${tab?.supported ? '' : 'unsupported'}`}
-                  title={tab?.url || 'Select a website'}
-                >
-                  <Globe2 size={12} />
-                  <span>{hostname}</span>
-                </span>
+                <div className="composer-selectors">
+                  <AgentPicker
+                    value={settings.agent || 'build'}
+                    disabled={!connected || busy}
+                    onChange={(agent) => perform(() => rpc('preferences.agent', { agent }))}
+                    onError={setError}
+                  />
+                  {connected && (
+                    <ModelPicker
+                      session={session}
+                      revision={modelRevision}
+                      preference={settings.model}
+                      disabled={busy || sending}
+                      onError={setError}
+                    />
+                  )}
+                </div>
                 <div className="composer-right">
                   <span className="key-hint">↵</span>
                   {busy ? (
@@ -1082,27 +990,12 @@ export default function App() {
               </div>
             </div>
             <div className="bottom-bar">
-              <span className="this-tab" title={tab?.title}>
+              <span className="this-tab" title={tab?.url}>
                 <Monitor size={12} />
-                This tab
-                <span className={`tiny-dot ${tab?.supported ? 'green' : ''}`} />
+                This tab <span className={`tiny-dot ${tab?.supported ? 'green' : ''}`} />
+                <span className="context-site">{hostname}</span>
               </span>
-              <div>
-                <AgentPicker
-                  value={settings.agent || 'build'}
-                  disabled={!connected || busy}
-                  onChange={(agent) => perform(() => rpc('preferences.agent', { agent }))}
-                  onError={setError}
-                />
-                <button
-                  className="fast-open"
-                  title="Open the local OpenCode web client"
-                  onClick={() => perform(() => rpc('fast.open'))}
-                >
-                  Fast Open
-                  <ExternalLink size={11} />
-                </button>
-              </div>
+              <span className="browser-only-label">Browser only</span>
             </div>
           </div>
         </>
@@ -1213,7 +1106,7 @@ function AgentPicker({
 function ConnectionSettings({
   settings,
   connection,
-  bridge,
+  browserConnection,
   userScripts,
   onClose,
   onSaved,
@@ -1221,7 +1114,7 @@ function ConnectionSettings({
 }: {
   settings: Settings;
   connection: ConnectionState;
-  bridge: BridgeState;
+  browserConnection: BrowserConnectionState;
   userScripts: boolean;
   onClose: () => void;
   onSaved: (value: Settings) => void;
@@ -1230,6 +1123,7 @@ function ConnectionSettings({
   const [form, setForm] = useState(settings),
     [pairLink, setPairLink] = useState(''),
     [saving, setSaving] = useState(false),
+    [installing, setInstalling] = useState(false),
     [finding, setFinding] = useState(false),
     [found, setFound] = useState<any[]>([]),
     [models, setModels] = useState<{ value: string; label: string }[]>([]);
@@ -1299,8 +1193,7 @@ function ConnectionSettings({
           />
         </label>
         <small className="field-note">
-          Or enter the service URL and its actual password below. The browser bridge token is
-          separate.
+          Or enter the service URL and its actual password below.
         </small>
       </div>
       <label>
@@ -1409,54 +1302,51 @@ function ConnectionSettings({
       <div className="settings-divider" />
       <div className="subsection-heading">
         <h3>Browser tools</h3>
-        <span className={`status-label ${bridge.registered ? 'good' : ''}`}>
+        <span className={`status-label ${browserConnection.registered ? 'good' : ''}`}>
           <i />
-          {bridge.registered
+          {browserConnection.registered
             ? 'Ready in OpenCode'
-            : bridge.state === 'connected'
-              ? 'Paired · waiting for OpenCode'
-              : bridge.state === 'connecting'
-                ? 'Connecting bridge'
-                : 'Bridge offline'}
+            : browserConnection.state === 'connected'
+              ? 'Native plugin ready'
+              : browserConnection.state === 'connecting'
+                ? 'Connecting'
+                : 'Setup required'}
         </span>
       </div>
       <p className="view-description">
-        The local bridge makes this tab available as real MCP tools inside OpenCode.
+        Browser tools use your existing OpenCode connection. Enable the bundled native plugin once
+        for this project.
       </p>
-      <div className="setup-command">
-        <code>npm run bridge</code>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="Copy bridge command"
-          onClick={() => void navigator.clipboard.writeText('npm run bridge')}
-        >
-          <Copy size={13} />
-        </button>
-      </div>
       <small className="field-note">
-        Run from the Open Extension project folder. Paste the pairing token printed in that
-        terminal.
+        Installs <code>.opencode/plugins/open-extension.js</code> in OpenCode’s current project and
+        reloads its plugins. Your agent remains limited to website DOM tools.
       </small>
-      <label>
-        Bridge URL
-        <input
-          value={form.bridgeUrl}
-          onChange={(event) => change('bridgeUrl', event.target.value)}
-          placeholder="http://127.0.0.1:49375"
-        />
-      </label>
-      <label>
-        Browser bridge token
-        <input
-          type="password"
-          autoComplete="off"
-          value={form.bridgeToken}
-          onChange={(event) => change('bridgeToken', event.target.value)}
-          placeholder="Token from the bridge terminal"
-        />
-      </label>
-      {bridge.error && <p className="field-note error-text">{bridge.error}</p>}
+      <button
+        type="button"
+        className="secondary-button full"
+        disabled={saving || installing || connection.state !== 'connected'}
+        onClick={async () => {
+          setInstalling(true);
+          onError('');
+          try {
+            await rpc('native.install');
+          } catch (error) {
+            onError((error as Error).message);
+          } finally {
+            setInstalling(false);
+          }
+        }}
+      >
+        {installing ? <Loader2 size={14} className="spin" /> : <Plug size={14} />}
+        {installing
+          ? 'Enabling native tools…'
+          : browserConnection.registered
+            ? 'Update native browser tools'
+            : 'Enable native browser tools'}
+      </button>
+      {browserConnection.error && (
+        <p className="field-note error-text">{browserConnection.error}</p>
+      )}
       <div className={`permission-setup ${userScripts ? 'ready' : ''}`}>
         <div>
           <Code2 size={15} />
@@ -1486,7 +1376,7 @@ function ConnectionSettings({
           : connection.error || 'Waiting for a local server'}
         {connection.spec && <small>{connection.spec}</small>}
       </div>
-      <button className="primary-button full" type="submit" disabled={saving}>
+      <button className="primary-button full" type="submit" disabled={saving || installing}>
         {saving ? <Loader2 size={14} className="spin" /> : <Plug size={14} />}
         {saving ? 'Connecting…' : pairLink.trim() ? 'Pair & connect' : 'Save & connect'}
       </button>

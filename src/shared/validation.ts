@@ -53,13 +53,16 @@ export function validateSettings(input: Settings): Settings {
   const value = {
     ...input,
     serverUrl: localUrl(input.serverUrl),
-    bridgeUrl: localUrl(input.bridgeUrl),
   };
   if (!value.username || value.username.includes(':'))
     throw new Error('Basic Auth username must be nonempty and cannot contain a colon.');
-  if (value.directory.length > 4096 || value.bridgeToken.length > 512)
-    throw new Error('Settings value is too long.');
-  return value;
+  if (value.directory.length > 4096) throw new Error('Settings value is too long.');
+  const {
+    bridgeUrl: _url,
+    bridgeToken: _token,
+    ...clean
+  } = value as Settings & { bridgeUrl?: unknown; bridgeToken?: unknown };
+  return clean;
 }
 
 export function validatePattern(pattern: string): string {

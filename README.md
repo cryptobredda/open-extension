@@ -1,71 +1,84 @@
 # Open Extension
 
-A Manifest V3 Chrome side panel for your **existing local OpenCode server**. Describe a page change, see it happen, inspect the result, then approve a reusable site script. There is no embedded model, separate chat database, or third-party AI service in the extension.
+A Manifest V3 Chrome/Brave side panel for your **existing local OpenCode server**. Ask about the active page, make a live DOM change, verify it, then approve a reversible script for that website. All AI requests, reasoning, tool execution records and chat history belong to your OpenCode backend.
 
-[Download v1.2.0](https://github.com/cryptobredda/open-extension/releases/tag/v1.2.0) · [Report an issue](https://github.com/cryptobredda/open-extension/issues)
+[Download the latest release](https://github.com/cryptobredda/open-extension/releases/latest) · [Report an issue](https://github.com/cryptobredda/open-extension/issues)
 
 ## Install
 
-Version **1.2.0** supports the native **OpenCode 2.0.29** API and automatically detects legacy 1.x servers. Requires **Chrome/Brave 138+**, **Node.js 22+**, and an existing OpenCode service with a configured agent and model/provider.
+Requires **Chrome/Brave 138+** and **OpenCode 2.0.29** with a configured agent and tool-capable model. Newer compatible v2 versions should work; the native plugin protocol is checked when connecting. There is **no separate bridge process, port, token or Node installation** for a prebuilt install.
+
+1. Download **`open-extension-chrome-v1.3.0.zip`** from Releases and extract it.
+2. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the extracted `open-extension/extension` directory.
+3. On the extension’s **Details** page, enable **Allow User Scripts**. Click the extension icon or press **Alt+Shift+O** to open the panel.
+4. Open **Connection settings**. Run `opencode pair` and paste a **fresh, unopened full pairing link** into the extension. Alternatively, enter the local service origin and service password, with username `opencode` unless customized. Click **Pair & connect** or **Save & connect**.
+5. Click **Enable native browser tools**. This installs the bundled `.opencode/plugins/open-extension.js` into OpenCode’s current project and reloads its plugins. Wait for **Ready in OpenCode**. Installation waits until all backend turns have finished. The agent does not perform this installation and is not granted file access.
+6. Open a regular website, choose a connected model in the composer, and describe a change.
+
+Default service ports are **49374** on macOS/Linux/WSL and **45278** on Windows. **Discover** checks common local ports; manually configured private LAN or `.local` origins work through your system resolver. The extension does not implement an mDNS browser. Pairing links are single-use and expire; entering the service’s actual password also works. Credentials stay in the extension service worker and are never injected into websites. Remembering the password uses Chrome local storage, which is not an encrypted vault; otherwise it lasts only for the browser session.
+
+The project directory setting selects the OpenCode location and plugin installation directory. Enable the native plugin once for each project you use. Your existing backend sessions remain accessible from the conversation history button. An attached conversation uses browser-only permissions **for that session**, including when opened by another OpenCode client. Start a separate session for ordinary filesystem work.
+
+To build from source, install Node.js 22+, then:
 
 ```sh
 git clone https://github.com/cryptobredda/open-extension.git
 cd open-extension
 npm ci
 npm run build
-npm run bridge
 ```
 
-For a prebuilt installation, download **`open-extension-project-v1.2.0.zip`** from Releases. It contains both the compiled extension and browser bridge source. Extract it, run `npm ci` and `npm run bridge` inside the project folder, then load its `dist` directory. The smaller Chrome ZIP contains only the extension and requires a separately running bridge.
+Load `dist` as the unpacked extension and follow steps 3–6. The complete project ZIP includes sources and a compiled `dist` directory. The bundled plugin is self-contained; it does not need npm dependencies installed beside it. You can also install `dist/open-extension-plugin.js` manually at `.opencode/plugins/open-extension.js` in the selected OpenCode project and reload that location.
 
-1. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select this project's **`dist`** directory. Alternatively, extract `release/open-extension-chrome.zip` and select its `open-extension/extension` directory.
-2. On Open Extension's **Details** page, enable **Allow User Scripts**.
-3. Click the extension icon, or press **Alt+Shift+O**, to open the side panel.
-4. For OpenCode 2, run **`opencode pair`** and paste a **fresh, unopened full link** into **OpenCode pairing link** in Connection settings. The extension redeems it with `Accept: application/json` and uses the returned session credential as the Basic Auth password. Alternatively, enter the service URL and actual service password. The username defaults to `opencode`. The v2 defaults are `http://127.0.0.1:49374` on macOS/Linux/WSL and port `45278` on Windows; legacy CLI defaults to `4096`. Use `opencode service status` to check your actual address.
-5. Paste the token printed by `npm run bridge` into **Browser bridge token**. This is separate from the OpenCode pairing link/password. Leave Bridge URL at `http://127.0.0.1:49375` unless configured otherwise. Click **Pair & connect** when using a link, or **Save & connect** with a service password. OpenCode should report its actual version and Browser tools should show **Ready in OpenCode**.
-6. Select a normal website tab, choose a connected model in the composer, and send a message. Open Extension creates a real backend session, or you can attach an existing one from **Conversations**. **Build** selects a primary agent from your backend; **Fast Open** opens the same server's web interface.
+## Upgrading from the bridge releases
 
-**Two different credentials:** the OpenCode password/pairing link authenticates the AI server. The **Browser bridge token** must match the token printed by the running `npm run bridge` process. A green OpenCode connection does not mean the browser bridge is connected; Browser tools must also show **Ready in OpenCode**. If the panel reports that browser tools are disconnected, check the bridge process and that its token matches the value saved in settings.
+Reload the extension from the new unpacked build, reconnect to OpenCode, and click **Enable native browser tools**. Saved scripts, connection preferences and model selection are retained. Old bridge credentials are discarded. Stop the old `npm run bridge` process; it is no longer used. A legacy runtime MCP registration is not needed and cannot be used by browser-only sessions because native DOM tools use their own permission names.
 
-Do not launch a second OpenCode server just for this extension. It attaches to the service you already use. The build and bridge commands above do not start an OpenCode instance.
+OpenCode 1.x server identities can still be recognized for a useful upgrade message, but browser editing now requires the native v2 plugin API. Existing approved site scripts work independently of the backend connection.
 
-**Discovery** checks native v2 `/api/info` and legacy `/global/health` at the configured URL and common localhost ports without sending stored credentials to those ports. A protected candidate is marked unverified until you connect. Loopback, IPv6 loopback, private LAN addresses (including `192.168.x.x`) and configured `.local` names are supported. `.local` resolution uses the operating system; the extension does not perform a DNS-SD service enumeration or inspect your machine's process list or secret files.
+## Why the bridge was removed
 
-### Upgrade from 1.0.0 or 1.1.0
+Earlier releases used a loopback MCP server so the backend could dispatch tool calls into Chrome. Chat and model traffic already went straight to the existing OpenCode backend; the bridge never proxied inference. OpenCode 2.0.29 supports native server plugins and authenticated RPC/event endpoints, so the extra listener and pairing credential are unnecessary.
 
-Replace the files in the existing project folder with the **1.2.0 project ZIP**, keeping the same loaded `dist` path so Chrome retains scripts, settings and the extension ID. Stop the old bridge, run `npm ci`, then `npm run bridge`. The ZIP includes the compiled extension; use `npm run build` only after editing source. Click **Reload** on Open Extension in `chrome://extensions`, then reopen the panel. Its Details page should show **1.2.0**. Existing OpenCode pairing and user-script permission remain valid; re-pair only if your service credential expired.
-
-Version 1.2.0 fixes requests being interpreted as local coding tasks. Panel turns now get a fresh DOM snapshot, explicit website instructions and session-scoped permissions that expose only this extension's browser tools. File, shell, subagent and unrelated MCP tools are denied in these sessions. This applies to a session you use from the panel, including attached sessions, and is shared with other OpenCode clients; global agents, project files and provider configuration are unchanged. A missing bridge or disabled user scripting stops the request before any prompt is sent.
-
-The composer model selector lists the server's enabled models by provider, filters by name or ID, switches the actual session immediately and remembers the preference for new chats. Model changes made by other clients appear in the selector. **OpenCode default** selects the backend/agent default. Models without tool calling cannot be used for page changes. The dark UI follows OpenCode's official `oc-2` palette.
-
-Version 1.0.0 used a legacy health API on native v2 servers. If upgrading from that version without a working connection, run `opencode pair` and paste a fresh unopened link into **OpenCode pairing link**, retaining your Browser bridge token. Links work once and expire after five minutes. A pairing link opened in a normal browser creates a cookie that is separate from the extension's own connection.
-
-### Why a small local bridge is included
-
-OpenCode must receive real tools through MCP. An MV3 service worker cannot listen for inbound HTTP requests or run a local process. The included Node process exposes an authenticated, loopback-only MCP endpoint and relays tool calls over a paired WebSocket to the extension. It has no model, chat storage, OpenCode credentials, filesystem tools, or browser automation engine.
-
-The extension registers it dynamically through native v2 **`PUT /api/experimental/mcp/open_extension`**, or **`POST /mcp`** on a legacy server, in the selected project. The v2 registration uses `codemode: false` to expose the `open_extension_*` tools directly to the agent. This does not rewrite your `opencode.json`. The bridge must be running while using browser tools. To run it as a background service, point your OS service manager at `node /absolute/path/to/open-extension/dist/bridge.mjs` with Node 22+ and the project's installed dependencies available. Startup and shutdown are controlled by your service manager; no system services are installed automatically.
-
-The pairing token is created once in the user's configuration directory: `%APPDATA%/open-extension/bridge-token` on Windows, `$XDG_CONFIG_HOME/open-extension/bridge-token` when configured, otherwise `~/.config/open-extension/bridge-token`. It is created with owner-only Unix permissions. Keep it private. The token is also stored in the extension's trusted local storage for automatic reconnection.
-
-```sh
-# Optional bridge overrides; no OpenCode provider credentials belong here.
-OPEN_EXTENSION_BRIDGE_PORT=49375 npm run bridge
-# Or provide a persistent token of at least 32 characters through
-# OPEN_EXTENSION_BRIDGE_TOKEN in your service configuration.
+```mermaid
+flowchart LR
+  Panel[Chrome side panel] --> Worker[Extension service worker]
+  Worker <-->|Existing Basic Auth HTTP and SSE| OpenCode[Existing OpenCode v2 server]
+  OpenCode --> Model[Your configured provider]
+  OpenCode --> Plugin[Native DOM tools plugin]
+  Plugin <-->|Private command/result RPC| Worker
+  Worker --> Content[Active-tab content and user scripts]
+  Content --> Page[Live website DOM]
+  Worker --> Storage[Chrome script storage]
 ```
 
-## Workflow
+The plugin exposes seven tools through OpenCode’s **native Execute / Code Mode** interface. It has no model client, socket listener or chat store. Commands carry a per-turn capability and are bound to a session attachment. Only command IDs appear on SSE; arguments are fetched through authenticated RPC. Attachments expire without a heartbeat. The extension rechecks the foreground tab, exact URL and document before acting, and revokes access on tab/navigation changes, panel closure, interruption or turn completion.
 
-- **Observe:** every request automatically supplies a fresh snapshot of the active page URL, title, text, relevant element attributes, geometry and sanitized HTML. The agent can query the live DOM for more detail. Requests such as “remove Relevant people” refer to this website.
-- **Experiment:** JavaScript executes immediately in the active page's main context through Chrome's userScripts API. CSS, DOM operations, listeners and observers can use cleanup helpers. Every mutation returns a fresh observation for the agent to compare against the request; code execution alone is not labeled a successful verification.
-- **Review:** after a live change and observation, the agent can call `site_script_propose`. **Update site script?** shows the name, domains, description, and complete code. Nothing is saved before the user's approval.
-- **Keep:** proposals default to **every route on the current domain**, such as `*://x.com/*`, and cannot silently add other domains. Approving saves a named, versioned script in `chrome.storage.local` and registers it with `chrome.userScripts`. It applies immediately and on future page loads, even with the panel and OpenCode closed. SPA URL changes trigger cleanup and reinjection. Use `api.watch` for DOM updates that do not change the URL.
-- **Improve:** if another page has a different layout, disable the script, open that page and click the script’s **Update with OpenCode** icon. Describe what else to remove. The agent receives the existing code and script ID, tests the new layout and proposes one complete replacement revision that preserves earlier behavior. Approval updates and enables the same script. You can also ask for an update in ordinary chat.
-- **Undo:** toggling off or deleting a script unregisters future injection and runs its tracked cleanup on currently matching tabs. The undo icon above the script list cleans up temporary experiments without disabling saved scripts. You can review, edit, add, or delete scripts from their list.
+The built-in OpenCode desktop browser plugin also has a native RPC interface, but its shared browser permission includes file transfers, other tabs and desktop-specific operations. This extension registers a smaller DOM-only namespace so it can deny local files, shell commands, other MCP servers and unrelated browser operations without changing your global agent configuration. All page JavaScript runs through Chrome; OpenCode’s sandboxed Execute runtime orchestrates those browser calls.
 
-Live agent tools are bound to a short-lived capability for **the foreground tab and exact URL authorized when sending the message**. They never accept a tab ID from the agent. Switching tabs, moving to another URL, closing the panel, or finishing a turn revokes control. Send a new message to authorize the new page. Already-approved saved scripts run on their approved domain matchers in all matching tabs.
+Implementation references: [OpenCode v2 API](https://opencode.ai/v2/docs/api), [building a client](https://opencode.ai/v2/docs/build/client), [v2.0.29 plugin RPC types](https://github.com/anomalyco/opencode/blob/v2.0.29/packages/plugin/src/promise/rpc.ts), [native browser connection](https://github.com/anomalyco/opencode/blob/v2.0.29/packages/plugin-browser/src/connection.ts), [Code Mode permission filtering](https://github.com/anomalyco/opencode/blob/v2.0.29/packages/core/src/tool.ts). The extension uses the official `@opencode/client` and the server’s `/api/*` API, `/api/event` stream and `/openapi.json` spec. `/doc` and `/global/health` belong to the legacy API.
+
+## Models and the OpenCode free-tier error
+
+The searchable model picker in the composer lists enabled models from your **existing backend’s connected providers**. Selecting a model updates the actual backend session; model changes made by another OpenCode client appear in the picker. Provider credentials remain on the backend. Open Extension does not impersonate a different client or send requests directly to model providers.
+
+This exact provider error is reproducible even without a bridge:
+
+> OpenCode’s free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building.
+
+An isolated **OpenCode 2.0.29 + `opencode/deepseek-v4.1-flash-free`** check on 2026-10-15 succeeded with the default native session, but the same model rejected browser-only session permissions. It also rejected the native Code Mode browser tool configuration. Removing the bridge does **not** resolve that provider restriction. The rejection comes back through the genuine OpenCode backend, rather than from a bridge credential or a leaked provider key. The extension retains the original error and explains how to choose another connected model. Other free models can have their own policies; the check does not establish identical behavior for every model. Use a model/provider that permits this workflow. Local file tools are not re-enabled to try to satisfy the free-tier gate.
+
+## Website workflow and script library
+
+- **Observe:** every request supplies a fresh snapshot of the active URL, title, relevant DOM, attributes, text and sanitized HTML. The agent can query the live page for more detail. “Remove Relevant people” refers to the website, not files on your machine.
+- **Experiment and verify:** JavaScript, CSS, DOM operations, event listeners and MutationObservers apply immediately. Each mutation returns a fresh observation, and the agent is instructed to check actual DOM/computed state before claiming success. A completed model turn is not proof of a page change.
+- **Approve:** the **Install site script?** / **Update site script?** card shows the name, domains, description and complete source. **Install** or **Update script** saves it; **Deny** keeps it temporary. Only this user action persists generated code.
+- **Apply to the website:** proposed matchers default to every route of the exact current hostname, e.g. `*://x.com/*`. Other domains cannot be silently added. Saved scripts run on page loads, refreshes and SPA navigation, even with OpenCode and the panel closed. `api.watch` handles late or changing DOM without navigation.
+- **Manage:** the top **Scripts** tab has **This site / All sites**, keyword/domain search, **Website / Name / Recently updated** sorting, and enabled/disabled filtering. This site includes scripts for other routes on that hostname; explicit wildcard matchers include their authorized subdomains. Sort/status preferences persist. Each script has a toggle, source editor, agent update action and delete action.
+- **Teach another layout:** disable the script, open the page with the different layout, choose **Scripts → Update with agent**, and describe the additional section. The agent receives the existing code and proposes a complete replacement that preserves earlier layouts. Approval updates and enables the same script instead of making a duplicate.
+- **Undo:** a toggle or delete unregisters future injection and immediately cleans up tracked changes in matching open tabs. The top undo button clears temporary experiments without disabling saved scripts.
+
+Live tools authorize only the active tab at the time you send a message; they never accept an agent-selected tab ID. Switching tabs or URLs ends that authorization. Send a new message to authorize the new page. Approved saved scripts apply in all tabs matching their approved domains.
 
 ## Reversible script API
 
@@ -109,75 +122,24 @@ Callbacks should be idempotent. A script may return a cleanup function, and part
 
 **Reversibility has a concrete boundary:** helper-managed page effects are undone immediately. Arbitrary JavaScript that changes untracked application state may require a page reload. External effects such as sending a request, submitting a form, or clicking a purchase button cannot be undone by a script toggle. Persistent scripts generated by the agent are instructed to use the helpers and explicit cleanup.
 
-## OpenCode integration
-
-Uses the official browser-compatible **`@opencode/client@2.0.29`** for native OpenCode 2. The older **`@opencode-ai/sdk/v2/client`** is retained only for legacy servers; that package entrypoint is not the native OpenCode 2 server protocol. Neither client launches an OpenCode process. All authenticated HTTP and SSE traffic is proxied through the extension service worker. Requests prohibit redirects and omit ambient browser credentials.
-
-| Operation                | Native OpenCode 2 API                                                                                         |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| Identity / compatibility | `GET /api/info`, `GET /openapi.json`                                                                          |
-| Pairing                  | `GET /auth/connect/{code}` with JSON negotiation; returned token is used as Basic Auth password               |
-| Shared sessions          | `GET/POST /api/session`, `GET /api/session/{sessionID}`, `GET /api/session/active`                            |
-| Full conversation        | Paginated `GET /api/session/{sessionID}/message`; all pages are read                                          |
-| Send / stop              | `POST /api/session/{sessionID}/prompt`, `POST /api/session/{sessionID}/interrupt`                             |
-| Browser instructions     | `PUT /api/experimental/session/{sessionID}/instructions/entries/open-extension.browser`                       |
-| Streaming                | Authenticated native `GET /api/event` with reconnect and authoritative history refresh                        |
-| Browser tools            | `PUT /api/experimental/mcp/open_extension`, `GET /api/mcp`, authenticated Streamable HTTP MCP over the bridge |
-| Approvals                | `/api/permission/request`, `/api/session/{sessionID}/permission/{requestID}/reply`                            |
-| Questions                | Native v2 pending forms and `/api/session/{sessionID}/form/{formID}/reply`/cancel                             |
-| Models / agents          | `GET /api/model`, `GET /api/agent`, session model/agent switch APIs                                           |
-
-The native v2 prompt body contains text and attachments, not the legacy `system`, `parts`, or `tools` fields. Browser context is delivered through a durable native instruction entry before the prompt. Model and agent selections use their native session APIs. The extension does not change global agent, provider, or service configuration.
-
-The conversation renders backend-provided reasoning, native assistant units, tool inputs/results, execution outcomes, and historical context. Native text/reasoning deltas use assistant IDs and ordinals; they are not treated as v1 message-part events. The client reads all session/message pages and handles native permissions and typed forms. Some models do not emit reasoning. The backend remains authoritative for its own permissions and session state.
-
-The native service is recognized by `/api/info` before any legacy health probe. The live native OpenAPI JSON is at `/openapi.json`; on 2.0.29 `/doc` serves HTML. Legacy 1.x servers continue to use `/global/health`, `/doc`, `/session`, `/event` and their existing request formats.
-
-Official references:
-
-- [OpenCode 2 HTTP API and pairing](https://opencode.ai/v2/docs/api)
-- [OpenCode 2 JavaScript client](https://opencode.ai/v2/docs/build/client)
-- [OpenCode 2 pairing and service configuration](https://opencode.ai/v2/docs/cli/web)
-- [OpenCode 2 MCP tool names and Code Mode](https://opencode.ai/v2/docs/mcp-servers)
-- [Legacy server API](https://opencode.ai/docs/server/)
-- [Chrome sidePanel](https://developer.chrome.com/docs/extensions/reference/api/sidePanel)
-- [Chrome userScripts](https://developer.chrome.com/docs/extensions/reference/api/userScripts)
-
-## Permissions and storage
-
-`sidePanel` hosts the persistent client. `scripting` and `userScripts` provide observation and page code. `tabs` and `activeTab` identify the foreground page; `webNavigation` catches SPA routes; `alarms` repairs persisted script registrations after updates or worker restarts. HTTP(S) host permissions support both arbitrary websites and the configured local backend. The extension does not request file or incognito access.
-
-Settings and site scripts live in trusted-context Chrome local storage, inaccessible to the content script. The OpenCode password defaults to session-only storage. **Remember password** opts into local storage, which is not an encrypted credential vault. Conversations are fetched from OpenCode and are not mirrored into Chrome storage. No telemetry, remote executable extension code, model API keys, or external UI assets are used.
-
-Chrome protects internal pages, the Web Store, and some browser-managed viewers; those cannot be modified. Observation targets the top-level document. Closed shadow roots and cross-origin frames are not included in DOM snapshots. Page data is treated as untrusted and is never allowed to call privileged extension RPC. Normal user-generated JavaScript runs through the required userScripts API rather than `eval` or a relaxed extension CSP.
-
 ## Development and verification
 
 ```sh
-npm run check              # Typecheck, unit/transport tests, production build
+npm ci
+npm run check            # TypeScript, unit checks, production build
 npx playwright install chromium
-npm run test:e2e           # Actual MV3 Chromium integration, isolated local fixture
-npm run package           # Creates the Chrome and complete project ZIPs
+npm run test:e2e         # Native RPC fixture + real Chrome, library/restart workflow
+npm run package          # Chrome-only and complete-project ZIPs
 ```
 
-The browser test checks strict-CSP execution, the paired MCP transport, observe/change/verify/propose/approve, immediate cleanup, listeners, browser-restart persistence, reload and SPA reinjection, dynamic DOM, backend event rendering, and refusal after the active tab changes. Fixture conversation text lives only in the test suite; the extension has no demo mode or preloaded chats/scripts.
-
-Native v2 browser tests verify pairing through the actual extension UI, v2 prompts and instructions, reasoning/tool streams, real browser MCP calls, script approval and cleanup. An additional live-server test checks real OpenCode **2.0.29**, including session creation/attachment, native instructions, real MCP registration, and native form submission. Run these against a disposable test server:
-
-```sh
-OPENCODE2_TEST_URL=http://127.0.0.1:49374 \
-OPENCODE2_TEST_PASSWORD=your-test-server-password \
-npm run test:e2e
-```
-
-Use a disposable test server: the native test creates/deletes a session and registers/removes an `open_extension` runtime MCP entry. It does not invoke a model. Legacy live-server regression tests can additionally be enabled with `OPENCODE_TEST_URL` and `OPENCODE_TEST_PASSWORD`; those register/disconnect `open_extension_contract_test`. Both native 2.0.29 and legacy 1.19.0 were verified. The separate real-server DOM test launches an isolated **actual OpenCode 2.0.29 binary** with a local deterministic OpenAI-compatible provider. OpenCode makes its own provider requests and executes MCP calls; the test never invokes browser tools on the agent’s behalf. It asserts that the provider receives the fresh page context and only the seven browser tools, then exercises live DOM removal, verification, approval, full-domain reload/SPA persistence, disabled-script updates for another layout, cleanup and model switching across clients. Run it without affecting your shared service:
+For a real backend/provider/tool contract, point to an **OpenCode 2.0.29 binary**:
 
 ```sh
 OPENCODE2_BINARY=/absolute/path/to/opencode npm run test:e2e
 ```
 
-This verifies real backend execution and the browser workflow with controlled model outputs. It does not establish that every provider/model will choose correct selectors for every website.
+This starts an isolated backend with temporary config/data directories and a deterministic local OpenAI-compatible provider. It installs the native plugin through the actual extension UI, checks that only native Execute is exposed with the seven DOM functions in its catalog, and lets OpenCode execute all browser calls itself. It exercises removal, re-observation, approval, domain-wide reload/SPA persistence, an update for a second layout, cleanup, connected model selection and model changes from another client. It does not affect your shared service or send paid provider requests. The regular Chrome tests also check pairing, reasoning streams, strict page CSP, listener cleanup, active-tab revocation, script-library filtering/sorting/deleting and browser-restart persistence. Tests verify the workflow with controlled model outputs; they cannot establish correct selectors for every model on every website.
 
-Source layout: `src/panel` (React client), `src/background` (proxy, sessions, tool authorization, persistence), `src/content` (DOM observation and reversible runtime), `bridge` (loopback MCP relay), and `tests` (transport, lifecycle, browser and live-server contracts).
+Source layout: `src/panel` (React interface), `src/background` (server proxy, session/attachment lifecycle, browser authorization and storage), `src/native` (in-process OpenCode plugin and RPC protocol), `src/content` (DOM observation and reversible runtime), `src/shared` (schemas and view models), `tests` (native protocol, lifecycle and browser contracts).
 
-Licensed under MIT. Dependencies retain their own licenses; bundled extension files preserve their license notices.
+Licensed under MIT. Dependencies retain their own licenses; bundled files preserve their license notices.

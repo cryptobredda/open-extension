@@ -3,7 +3,7 @@ import { BROWSER_TOOLS } from '../../src/shared/browser-context';
 import { OpenCode, redeemPairing } from '../../src/background/opencode';
 import { DEFAULT_SETTINGS } from '../../src/shared/types';
 import { pairingLink, localUrl } from '../../src/shared/validation';
-import { v2Message } from '../../src/shared/opencode-v2';
+import { structuredError, v2Message } from '../../src/shared/opencode-v2';
 import { reduceConversation } from '../../src/shared/conversation';
 
 const json = (value: unknown, status = 200) =>
@@ -143,8 +143,9 @@ describe('real OpenCode 2 protocol selection', () => {
       body: {
         permissions: [
           { action: '*', resource: '*', effect: 'deny' },
+          { action: 'execute', resource: '*', effect: 'allow' },
           ...BROWSER_TOOLS.map((name) => ({
-            action: `open_extension_${name}`,
+            action: `open-extension.dom.${name}`,
             resource: '*',
             effect: 'allow',
           })),
@@ -240,4 +241,15 @@ describe('native conversation records and events', () => {
     expect(messages[0].parts[2].state.status).toBe('completed');
     expect(messages[0].parts[3].text).toBe('Verified');
   });
+});
+
+it('preserves provider free-tier rejection and distinguishes it from browser transport errors', () => {
+  const error = structuredError({
+    type: 'provider.auth',
+    message:
+      "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building.",
+  });
+  expect(error).toContain("OpenCode's free tier");
+  expect(error).toContain('Choose another connected model');
+  expect(error).toContain('reconnecting browser tools will not resolve');
 });

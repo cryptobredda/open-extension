@@ -14,8 +14,6 @@ export type Settings = {
   password: string;
   rememberPassword: boolean;
   directory: string;
-  bridgeUrl: string;
-  bridgeToken: string;
   showReasoning: boolean;
   model: string;
   agent: string;
@@ -26,8 +24,6 @@ export const DEFAULT_SETTINGS: Settings = {
   password: '',
   rememberPassword: false,
   directory: '',
-  bridgeUrl: 'http://127.0.0.1:49375',
-  bridgeToken: '',
   showReasoning: true,
   model: '',
   agent: 'build',
@@ -72,7 +68,7 @@ export type ConnectionState = {
   spec?: string;
   protocol?: 'v1' | 'v2';
 };
-export type BridgeState = {
+export type BrowserConnectionState = {
   state: 'disconnected' | 'connecting' | 'connected';
   error?: string;
   registered?: boolean;

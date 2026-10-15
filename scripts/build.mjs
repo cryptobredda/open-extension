@@ -28,13 +28,13 @@ await build({
   minify: true,
 });
 await build({
-  entryPoints: ['bridge/index.ts'],
-  outfile: 'dist/bridge.mjs',
+  entryPoints: ['src/native/plugin.ts'],
+  outfile: 'dist/open-extension-plugin.js',
   bundle: true,
   format: 'esm',
   platform: 'node',
   target: 'node22',
-  packages: 'external',
+  minify: true,
 });
 // Tiny generated PNG icons, no external artwork or build-time network dependencies.
 const { deflateSync } = await import('node:zlib');
@@ -82,4 +82,4 @@ for (const size of [16, 32, 48, 128]) {
     ]),
   );
 }
-console.log('Built extension in dist/ and bridge at dist/bridge.mjs');
+console.log('Built extension and bundled native OpenCode plugin in dist/');

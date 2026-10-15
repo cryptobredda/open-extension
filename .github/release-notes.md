@@ -1,13 +1,14 @@
-Open Extension connects a Chrome or Brave side panel to your existing local OpenCode backend. All model reasoning, tool calls and conversation history stay on OpenCode.
+Open Extension 1.3.0 replaces the separate browser bridge with native OpenCode tools and recreates the compact dark side-panel UI.
 
-- Edit and verify the active website's live DOM with browser-only MCP tools.
-- Save reversible scripts for every route on a domain, including dynamic SPA content.
-- Update an existing script for another page layout while preserving its earlier behavior.
-- Select connected OpenCode models directly in the composer.
-- OpenCode-style dark theme, real reasoning/tool events and shared backend sessions.
+- No separate process, port, Node installation or browser pairing key for the prebuilt extension. Browser commands use the existing authenticated OpenCode HTTP/event connection.
+- Enable the bundled native OpenCode plugin once from Connection settings. All AI, models and history remain on your existing server; live tools stay restricted to the active website.
+- Compact conversation bubbles, slim composer with agent/model controls, review cards and a centered **Open Extension** welcome screen.
+- Dedicated top-level **Scripts** tab with **This site / All sites**, search, website/name/date sorting, status filters, toggles, code editing, agent-assisted updates and deletion.
+- Verified full-domain script persistence across refreshes, SPA navigation and alternate DOM layouts.
+- Free-tier diagnostics: the reported OpenCode free-model rejection also occurs with browser-only permissions on a real native backend. Removing the bridge does not resolve that provider policy. Errors now explain how to select another connected model.
 
-Download the **open-extension-project** ZIP for the complete project, including the compiled extension and browser bridge. Requires Node.js 22+, Chrome/Brave 138+, and an existing OpenCode service with a configured agent and model. Run `npm ci` and `npm run bridge`, then load the project's `dist` directory as an unpacked extension. The smaller **open-extension-chrome** ZIP contains only the browser extension; the bridge is still required.
+Download **open-extension-chrome-v1.3.0.zip**, extract it, and load its `open-extension/extension` directory using Chrome/Brave’s **Load unpacked**. Requires Chrome/Brave 138+ and OpenCode 2.0.29. Enable **Allow User Scripts**, connect to your existing OpenCode service, then click **Enable native browser tools**. This installs `.opencode/plugins/open-extension.js` in the selected backend project and reloads its plugins. The project ZIP also includes sources and a compiled `dist` build.
 
-The **OpenCode pairing credential** and **browser bridge token** are separate. Paste the token printed by the running bridge into Browser bridge token, and confirm Browser tools says Ready in OpenCode.
+Upgrading from 1.2: saved scripts and connection preferences are retained; old bridge credentials are discarded. Stop `npm run bridge` after enabling the native plugin. Existing approved site scripts continue to work offline.
 
-See the repository README for installation, permissions, script persistence and development instructions. Verified with OpenCode 2.0.29, including real backend model requests and browser execution using a controlled local provider.
+Validation includes TypeScript/unit checks, native RPC integration in real Chrome, script-library/browser-restart coverage, and an isolated actual OpenCode 2.0.29 server with a controlled local provider driving the complete browser workflow. See the README for setup, architecture and provider-policy details.

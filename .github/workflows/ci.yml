@@ -21,6 +21,11 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npx playwright install --with-deps chromium
+      - name: Install the pinned OpenCode v2 test binary
+        run: |
+          npm install --prefix "$RUNNER_TEMP/opencode-contract" --no-save --ignore-scripts @opencode/cli-linux-x64@2.0.29
+          chmod +x "$RUNNER_TEMP/opencode-contract/node_modules/@opencode/cli-linux-x64/bin/opencode"
+          echo "OPENCODE2_BINARY=$RUNNER_TEMP/opencode-contract/node_modules/@opencode/cli-linux-x64/bin/opencode" >> "$GITHUB_ENV"
       - run: npm run test:e2e
       - run: npm run package
       - uses: actions/upload-artifact@v4

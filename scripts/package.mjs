@@ -7,8 +7,6 @@ await mkdir(stage, { recursive: true });
 await cp('dist', `${stage}/extension`, { recursive: true });
 await cp('README.md', `${stage}/README.md`);
 await cp('LICENSE', `${stage}/LICENSE`);
-// Bridge stays alongside the source and dependencies, never inside the Chrome package.
-await rm(`${stage}/extension/bridge.mjs`, { force: true });
 await rm('release/open-extension-chrome.zip', { force: true });
 execFileSync('zip', ['-qr', 'open-extension-chrome.zip', 'open-extension'], {
   cwd: 'release',
@@ -18,7 +16,6 @@ await rm(project, { recursive: true, force: true });
 await mkdir(project, { recursive: true });
 for (const item of [
   'src',
-  'bridge',
   'scripts',
   'public',
   'tests',
